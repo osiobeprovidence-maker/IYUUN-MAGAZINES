@@ -1,0 +1,128 @@
+{
+  "entities": {
+    "Story": {
+      "title": "Story",
+      "description": "An article or video entry in the magazine.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "type": "string" },
+        "title": { "type": "string" },
+        "excerpt": { "type": "string" },
+        "content": { "type": "string" },
+        "image": { "type": "string" },
+        "video": { "type": "string" },
+        "aspect": { "type": "string", "enum": ["portrait", "landscape", "square"] },
+        "type": { "type": "string", "enum": ["image", "video"] },
+        "date": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "number", "description": "Timestamp" },
+        "likesCount": { "type": "number" }
+      },
+      "required": ["id", "category", "title", "excerpt", "aspect", "type", "date", "ownerId", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A magazine user, editor, or administrator.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "editor", "viewer"] },
+        "joined": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "banned"] }
+      },
+      "required": ["email", "role"]
+    },
+    "Ad": {
+      "title": "Ad",
+      "description": "An advertisement campaign.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "partner": { "type": "string" },
+        "headline": { "type": "string" },
+        "copy": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "partner", "headline", "copy", "isActive", "createdAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "A content taxonomy category.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "A reader comment on a story.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "storyId": { "type": "string" },
+        "author": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "storyId", "author", "text", "createdAt"]
+    },
+    "Subscriber": {
+      "title": "Subscriber",
+      "description": "A newsletter subscriber.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A print issue order.",
+      "type": "object",
+      "properties": {
+        "userEmail": { "type": "string" },
+        "storyId": { "type": "string" },
+        "storyTitle": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "shipped", "cancelled"] },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userEmail", "storyId", "storyTitle", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/stories/{storyId}": {
+      "schema": { "$ref": "#/entities/Story" },
+      "description": "All published stories"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles and roles"
+    },
+    "/ads/{adId}": {
+      "schema": { "$ref": "#/entities/Ad" },
+      "description": "Advertising units"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Taxonomy nodes"
+    },
+    "/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/Comment" },
+      "description": "Social engagement discourse"
+    },
+    "/subscribers/{subId}": {
+      "schema": { "$ref": "#/entities/Subscriber" },
+      "description": "Newsletter mailing list"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Print order queue"
+    }
+  }
+}

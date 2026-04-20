@@ -1,0 +1,139 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- PRIMITIVES ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Role-based access from user profile
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'riderezzy@gmail.com' || 
+        getUserData().role == 'admin'
+      );
+    }
+
+    function isEditor() {
+      return isSignedIn() && (
+        request.auth.token.email == 'riderezzy@gmail.com' ||
+        getUserData().role in ['admin', 'editor']
+      );
+    }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+
+    // --- VALIDATION HELPERS ---
+
+    function isValidStory(data) {
+      return data.keys().hasAll(['id', 'category', 'title', 'excerpt', 'aspect', 'type', 'date', 'ownerId', 'createdAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.category is string && data.category.size() <= 100
+        && data.title is string && data.title.size() <= 200
+        && data.excerpt is string && data.excerpt.size() <= 500
+        && data.aspect in ['portrait', 'landscape', 'square']
+        && data.type in ['image', 'video']
+        && data.date is string && data.date.size() <= 50
+        && data.ownerId is string
+        && data.createdAt is number
+        && (data.keys().size() <= 13); // optional content, image, video, likesCount
+    }
+
+    function isValidAd(data) {
+      return data.keys().hasAll(['id', 'partner', 'headline', 'copy', 'isActive', 'createdAt'])
+        && data.id is string
+        && data.partner is string && data.partner.size() <= 100
+        && data.headline is string && data.headline.size() <= 150
+        && data.copy is string && data.copy.size() <= 500
+        && data.isActive is bool
+        && data.createdAt is number;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['userEmail', 'storyId', 'storyTitle', 'status', 'createdAt'])
+        && data.userEmail == request.auth.token.email
+        && data.storyId is string
+        && data.storyTitle is string
+        && data.status in ['pending', 'shipped', 'cancelled']
+        && data.createdAt is number;
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['storyId', 'author', 'text', 'createdAt'])
+        && data.storyId is string
+        && data.author is string && data.author.size() <= 100
+        && data.text is string && data.text.size() <= 1000
+        && data.createdAt is number;
+    }
+
+    // --- COLLECTIONS ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && userId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'joined'])) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /stories/{storyId} {
+      allow read: if true;
+      allow create: if isEditor() && isValidStory(incoming()) && incoming().ownerId == request.auth.uid;
+      allow update: if (isEditor() && isValidStory(incoming()) && (
+        // Identity protection
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        // Action: standard edit
+        incoming().diff(existing()).affectedKeys().hasAll(['category', 'title', 'excerpt', 'content', 'image'])
+      )) || (
+        // Public engagement: Likes
+        isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['likesCount'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /categories/{catId} {
+      allow read: if true;
+      allow write: if isEditor();
+    }
+
+    match /ads/{adId} {
+      allow read: if true;
+      allow write: if isEditor() && isValidAd(incoming());
+    }
+
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isValidComment(incoming());
+      allow delete: if isAdmin();
+    }
+
+    match /subscribers/{subId} {
+      allow create: if incoming().email is string && incoming().email.size() <= 250;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && (existing().userEmail == request.auth.token.email || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isValidOrder(incoming());
+      allow update: if isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+      allow delete: if isAdmin();
+    }
+  }
+}
