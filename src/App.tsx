@@ -818,6 +818,7 @@ const AdminDashboard = ({
                 { id: 'ads', icon: Megaphone, label: 'Ad Campaigns' },
                 { id: 'categories', icon: Search, label: 'Taxonomy' },
                 { id: 'team', icon: Users, label: 'Manage Team' },
+                { id: 'media', icon: Eye, label: 'Media Library' },
                 { id: 'orders', icon: Save, label: 'Print Orders' }
               ].map(item => {
                 const Icon = item.icon;
@@ -1237,6 +1238,59 @@ const AdminDashboard = ({
               </div>
            </div>
          )}
+
+         {activeTab === 'media' && (
+            <div className="max-w-6xl mx-auto space-y-12">
+               <h2 className="text-2xl font-bold uppercase tracking-tighter">Digital Archive // Storage Explorer</h2>
+               
+               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                 {stories.filter(s => s.image || s.video).map(story => (
+                   <div key={story.id} className="aspect-square bg-white border border-brand-black/5 rounded-lg overflow-hidden group relative shadow-sm hover:border-brand-red transition-all">
+                     {story.type === 'video' ? (
+                       <video src={story.video} className="w-full h-full object-cover grayscale group-hover:grayscale-0" muted loop onMouseEnter={e => e.currentTarget.play()} onMouseLeave={e => e.currentTarget.pause()} />
+                     ) : (
+                       <img src={story.image} className="w-full h-full object-cover grayscale group-hover:grayscale-0 group-hover:scale-110 transition-transform" />
+                     )}
+                     <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
+                        <p className="text-[8px] text-white font-bold uppercase truncate">{story.title}</p>
+                        <p className="text-[7px] text-brand-red font-bold uppercase">{story.type}</p>
+                     </div>
+                   </div>
+                 ))}
+                 
+                 {ads.filter(a => a.image || a.video).map(ad => (
+                   <div key={ad.id} className="aspect-square bg-white border border-brand-black/5 rounded-lg overflow-hidden group relative shadow-sm hover:border-brand-red transition-all">
+                     {ad.type === 'video' ? (
+                       <video src={ad.video} className="w-full h-full object-cover grayscale group-hover:grayscale-0" />
+                     ) : (
+                       <img src={ad.image} className="w-full h-full object-cover grayscale group-hover:grayscale-0 group-hover:scale-110 transition-transform" />
+                     )}
+                     <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
+                        <p className="text-[8px] text-white font-bold uppercase truncate">{ad.partner}</p>
+                        <p className="text-[7px] text-brand-red font-bold uppercase">AD UNIT</p>
+                     </div>
+                   </div>
+                 ))}
+                 
+                 {team.filter(m => m.avatarUrl).map(m => (
+                   <div key={m.id} className="aspect-square bg-white border border-brand-black/5 rounded-lg overflow-hidden group relative shadow-sm hover:border-brand-red transition-all">
+                     <img src={m.avatarUrl} className="w-full h-full object-cover grayscale group-hover:grayscale-0 group-hover:scale-110 transition-transform" />
+                     <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
+                        <p className="text-[8px] text-white font-bold uppercase truncate">{m.email}</p>
+                        <p className="text-[7px] text-brand-red font-bold uppercase">USER AVATAR</p>
+                     </div>
+                   </div>
+                 ))}
+               </div>
+               
+               {stories.length === 0 && ads.length === 0 && (
+                 <div className="p-24 border border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-center">
+                    <Upload size={48} className="opacity-10 mb-4" />
+                    <p className="text-[10px] uppercase font-bold tracking-widest opacity-30">No objects detected in cloud storage</p>
+                 </div>
+               )}
+            </div>
+          )}
       </div>
     </div>
   );
@@ -1577,7 +1631,8 @@ const ContactPage = () => {
 };
 
 const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentPage: (p: Page) => void }) => {
-  const [profile, setProfile] = useState<{name: string, email: string, role: string, isPremium: boolean, editorStatus: string} | null>(null);
+  const [profile, setProfile] = useState<{name: string, email: string, role: string, isPremium: boolean, editorStatus: string, avatarUrl?: string} | null>(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
 
@@ -1592,7 +1647,8 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
             email: d.email || user.email || '',
             role: d.role || 'viewer',
             isPremium: d.isPremium || false,
-            editorStatus: d.editorStatus || 'none'
+            editorStatus: d.editorStatus || 'none',
+            avatarUrl: d.avatarUrl
           });
         } else {
           const initData = {
@@ -1636,6 +1692,23 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
     } catch(err) { console.error(err); }
   };
 
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingAvatar(true);
+    try {
+      const avatarRef = ref(storage, `avatars/${user.uid}/${file.name}`);
+      await uploadBytes(avatarRef, file);
+      const url = await getDownloadURL(avatarRef);
+      await updateDoc(doc(db, 'users', user.uid), { avatarUrl: url });
+      setProfile(p => p ? {...p, avatarUrl: url} : p);
+    } catch(err) {
+      console.error(err);
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
   if (!profile) return <div className="min-h-screen pt-32 px-8 font-mono text-sm uppercase tracking-widest text-center flex items-center justify-center">Loading Identity Block...</div>;
 
   return (
@@ -1654,6 +1727,20 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
           {/* Identity Block */}
           <div className="border border-brand-black p-8 bg-white shadow-[8px_8px_0_rgba(0,0,0,1)] flex flex-col justify-between">
             <div>
+              <div className="relative group mb-8 w-24 h-24">
+                <div className="w-24 h-24 bg-brand-gray/20 border border-brand-black overflow-hidden flex items-center justify-center">
+                  {profile.avatarUrl ? (
+                    <img src={profile.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                  ) : (
+                    <Users size={40} className="opacity-20" />
+                  )}
+                </div>
+                <label className="absolute inset-0 bg-brand-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer text-[10px] uppercase font-bold text-center p-2">
+                  {isUploadingAvatar ? '...' : 'Change Identity Patch'}
+                  <input type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} disabled={isUploadingAvatar} />
+                </label>
+              </div>
+
               <p className="text-[10px] uppercase tracking-[0.4em] text-brand-red font-bold mb-6 flex items-center gap-2"><Shield size={14}/> Identity Block</p>
               
               <div className="space-y-6">
