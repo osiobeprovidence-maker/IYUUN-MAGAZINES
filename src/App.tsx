@@ -1630,11 +1630,19 @@ const ContactPage = () => {
   );
 };
 
-const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentPage: (p: Page) => void }) => {
-  const [profile, setProfile] = useState<{name: string, email: string, role: string, isPremium: boolean, editorStatus: string, avatarUrl?: string} | null>(null);
+const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList }: { 
+  user: FirebaseUser, 
+  setCurrentPage: (p: Page) => void,
+  stories: Story[],
+  readingHistory: string[],
+  orderList: Order[]
+}) => {
+  const [profile, setProfile] = useState<{name: string, email: string, role: string, isPremium: boolean, editorStatus: string, avatarUrl?: string, bio?: string} | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [editingName, setEditingName] = useState(false);
+  const [editingBio, setEditingBio] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newBio, setNewBio] = useState('');
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -1648,19 +1656,22 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
             role: d.role || 'viewer',
             isPremium: d.isPremium || false,
             editorStatus: d.editorStatus || 'none',
-            avatarUrl: d.avatarUrl
+            avatarUrl: d.avatarUrl,
+            bio: d.bio || 'Architect of the new Pan-African visual language.'
           });
+          setNewBio(d.bio || 'Architect of the new Pan-African visual language.');
         } else {
           const role = user.email === 'riderezzy@gmail.com' ? 'admin' : 'viewer';
           const initData = {
             name: user.displayName || user.email || 'Unknown',
             email: user.email || '',
             role,
-            isPremium: role === 'admin', // Super admin gets premium by default
-            editorStatus: role === 'admin' ? 'active' : 'none'
+            avatarUrl: role === 'admin' ? '' : undefined,
+            bio: 'Architect of the new Pan-African visual language.'
           };
           await setDoc(doc(db, 'users', user.uid), initData);
           setProfile(initData);
+          setNewBio(initData.bio);
         }
       } catch (err) {
         console.error(err);
@@ -1676,6 +1687,15 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
       await updateDoc(doc(db, 'users', user.uid), { name: newName.trim() });
       setProfile(p => p ? {...p, name: newName.trim()} : p);
       setEditingName(false);
+    } catch(err) { console.error(err); }
+  };
+
+  const handleUpdateBio = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { bio: newBio.trim() });
+      setProfile(p => p ? {...p, bio: newBio.trim()} : p);
+      setEditingBio(false);
     } catch(err) { console.error(err); }
   };
 
@@ -1770,6 +1790,29 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
                     <p className="font-display text-4xl font-bold uppercase tracking-tight">{profile.name}</p>
                   )}
                 </div>
+
+                <div>
+                   <div className="flex justify-between items-end mb-1">
+                    <p className="text-[10px] tracking-widest text-gray-400 uppercase font-bold">Digital Signature (Bio)</p>
+                    {!editingBio && <button onClick={() => setEditingBio(true)} className="text-[10px] font-bold uppercase text-brand-red hover:underline">Edit</button>}
+                  </div>
+                  {editingBio ? (
+                    <form onSubmit={handleUpdateBio} className="space-y-2">
+                      <textarea 
+                        value={newBio} 
+                        onChange={(e) => setNewBio(e.target.value)} 
+                        autoFocus
+                        className="w-full bg-brand-gray/20 border border-brand-black outline-none p-3 font-sans text-xs min-h-[100px]"
+                      />
+                      <div className="flex gap-2">
+                        <button type="submit" className="bg-brand-black text-white px-4 py-1 text-[10px] font-bold uppercase">Update</button>
+                        <button type="button" onClick={() => setEditingBio(false)} className="text-gray-400 text-[10px] uppercase font-bold">Cancel</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <p className="text-xs font-light leading-relaxed opacity-60 italic">"{profile.bio}"</p>
+                  )}
+                </div>
               </div>
             </div>
             
@@ -1823,6 +1866,73 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
                 </button>
               )}
             </div>
+          </div>
+        </div>
+
+        <div className="mt-24 pt-16 border-t border-brand-black/5">
+          <h3 className="text-[10px] uppercase tracking-[0.5em] font-bold text-gray-400 mb-8 flex items-center gap-2"><Eye size={14}/> Personal Archive // Recently Accessed</h3>
+          <div className="flex gap-6 overflow-x-auto no-scrollbar pb-8">
+            {readingHistory.length > 0 ? readingHistory.map(id => {
+              const story = stories.find(s => s.id === id);
+              if (!story) return null;
+              return (
+                <div 
+                  key={id} 
+                  onClick={() => { setSelectedStory(story); setCurrentPage('article'); }}
+                  className="min-w-[300px] group cursor-pointer"
+                >
+                  <div className="aspect-[16/9] bg-brand-gray/20 border border-brand-black/5 overflow-hidden mb-3 relative">
+                    <img src={story.image} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-105" />
+                    <div className="absolute top-2 right-2 bg-white px-2 py-1 text-[8px] font-bold uppercase border border-brand-black">{story.category}</div>
+                  </div>
+                  <h4 className="text-xs font-bold uppercase truncate group-hover:text-brand-red transition-colors">{story.title}</h4>
+                  <p className="text-[9px] opacity-40 uppercase tracking-widest mt-1">{story.date}</p>
+                </div>
+              );
+            }) : (
+              <div className="w-full py-16 border border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center text-[10px] uppercase font-bold opacity-30 tracking-widest italic text-center">
+                Archive currently empty // Explore the feed to populate
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-20">
+          <h3 className="text-[10px] uppercase tracking-[0.5em] font-bold text-gray-400 mb-8 flex items-center gap-2"><Save size={14}/> Signal Distribution // My Print Orders</h3>
+          <div className="bg-white border border-brand-black/5 rounded-2xl overflow-hidden shadow-sm">
+            {orderList.filter(o => o.userEmail === user.email).length > 0 ? (
+               <table className="w-full border-collapse">
+                 <thead className="bg-[#111] text-white text-[9px] uppercase font-bold tracking-widest text-left">
+                    <tr>
+                      <th className="p-5">Target Issue</th>
+                      <th className="p-5">Ledger ID</th>
+                      <th className="p-5">Status</th>
+                      <th className="p-5 text-right">Date</th>
+                    </tr>
+                 </thead>
+                 <tbody className="text-[11px]">
+                   {orderList.filter(o => o.userEmail === user.email).map(order => (
+                     <tr key={order.id} className="border-b border-brand-black/5 last:border-0 transition-colors hover:bg-brand-gray/20">
+                       <td className="p-5 font-bold uppercase text-brand-black">{order.storyTitle}</td>
+                       <td className="p-5 font-mono opacity-50">{order.id}</td>
+                       <td className="p-5">
+                         <span className={`px-3 py-1 rounded text-[9px] font-bold uppercase ${
+                           order.status === 'pending' ? 'bg-yellow-500/10 text-yellow-600 border border-yellow-500/20' :
+                           order.status === 'shipped' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 
+                           'bg-brand-red/10 text-brand-red border border-brand-red/20'
+                         }`}>{order.status}</span>
+                       </td>
+                       <td className="p-5 text-right opacity-40 font-bold">{new Date(order.createdAt).toLocaleDateString()}</td>
+                     </tr>
+                   ))}
+                 </tbody>
+               </table>
+            ) : (
+              <div className="p-20 text-center flex flex-col items-center gap-4">
+                 <Save size={32} className="opacity-10" />
+                 <p className="text-[10px] uppercase font-bold opacity-30 italic">No distribution requests found in ledger.</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2479,6 +2589,15 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
       />
       
       <main className="relative overflow-x-hidden">
+        {currentPage === 'profile' && user && (
+          <ProfilePage 
+            user={user} 
+            setCurrentPage={setCurrentPage} 
+            stories={stories}
+            readingHistory={readingHistory}
+            orderList={orderList}
+          />
+        )}
         {renderPage()}
       </main>
       
