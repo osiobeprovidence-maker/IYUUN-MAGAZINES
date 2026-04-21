@@ -4,7 +4,11 @@ import { Search, ArrowRight, Menu, X, Play, Shield, Upload, Save, Trash2, Eye, U
 import { db, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, getDocs, getDoc, setDoc, doc, deleteDoc, type FirebaseUser, query, orderBy, updateDoc, increment, addDoc, where, limit, storage, ref, uploadBytes, getDownloadURL } from './firebase';
 import { GoogleGenAI, Type } from '@google/genai';
 
-const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+const SUPER_ADMIN_EMAIL = 'riderezzy@gmail.com';
+const normalizeEmail = (email?: string | null) => email?.trim().toLowerCase() || '';
+const isSuperAdminEmail = (email?: string | null) => normalizeEmail(email) === SUPER_ADMIN_EMAIL;
+const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
+const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
 // --- TYPES ---
 type Page = 'index' | 'archive' | 'manifesto' | 'admin' | 'article' | 'search' | 'business' | 'about' | 'contact' | 'profile' | 'orders';
@@ -537,7 +541,7 @@ const AdminDashboard = ({
   // Orders State
   const [isFetchingOrders, setIsFetchingOrders] = useState(false);
 
-  const isSuperAdmin = user?.email === 'riderezzy@gmail.com';
+  const isSuperAdmin = isSuperAdminEmail(user?.email);
 
   useEffect(() => {
     if (activeTab === 'team') {
@@ -1630,12 +1634,13 @@ const ContactPage = () => {
   );
 };
 
-const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList }: { 
+const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList, onSelectStory }: { 
   user: FirebaseUser, 
   setCurrentPage: (p: Page) => void,
   stories: Story[],
   readingHistory: string[],
-  orderList: Order[]
+  orderList: Order[],
+  onSelectStory: (story: Story) => void
 }) => {
   const [profile, setProfile] = useState<{name: string, email: string, role: string, isPremium: boolean, editorStatus: string, avatarUrl?: string, bio?: string} | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
@@ -1661,13 +1666,15 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList 
           });
           setNewBio(d.bio || 'Architect of the new Pan-African visual language.');
         } else {
-          const role = user.email === 'riderezzy@gmail.com' ? 'admin' : 'viewer';
+          const role = isSuperAdminEmail(user.email) ? 'admin' : 'viewer';
           const initData = {
             name: user.displayName || user.email || 'Unknown',
             email: user.email || '',
             role,
             avatarUrl: role === 'admin' ? '' : undefined,
-            bio: 'Architect of the new Pan-African visual language.'
+            bio: 'Architect of the new Pan-African visual language.',
+            isPremium: role === 'admin',
+            editorStatus: role === 'admin' ? 'approved' : 'none'
           };
           await setDoc(doc(db, 'users', user.uid), initData);
           setProfile(initData);
@@ -1678,7 +1685,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList 
       }
     };
     fetchProfile();
-  }, [user.uid]);
+  }, [user]);
 
   const handleUpdateName = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1818,9 +1825,9 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList 
             
             <div className="mt-12 flex items-center gap-4">
               <div className={`px-4 py-2 text-[10px] uppercase font-bold tracking-widest border-2 ${profile.role === 'admin' ? 'border-brand-red text-brand-red' : 'border-brand-black'}`}>
-                {profile.email === 'riderezzy@gmail.com' ? 'Role: Super Admin' : `Role: ${profile.role}`}
+                {isSuperAdminEmail(profile.email) ? 'Role: Super Admin' : `Role: ${profile.role}`}
               </div>
-              {(profile.isPremium || profile.email === 'riderezzy@gmail.com') && (
+              {(profile.isPremium || isSuperAdminEmail(profile.email)) && (
                 <div className="px-4 py-2 text-[10px] uppercase font-bold tracking-widest border-2 border-brand-red bg-brand-red text-white flex items-center gap-2">
                   <Activity size={12}/> Premium Active
                 </div>
@@ -1878,7 +1885,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList 
               return (
                 <div 
                   key={id} 
-                  onClick={() => { setSelectedStory(story); setCurrentPage('article'); }}
+                  onClick={() => onSelectStory(story)}
                   className="min-w-[300px] group cursor-pointer"
                 >
                   <div className="aspect-[16/9] bg-brand-gray/20 border border-brand-black/5 overflow-hidden mb-3 relative">
@@ -2070,28 +2077,41 @@ export default function App() {
         const snap = await getDoc(userRef);
         
         if (!snap.exists()) {
-          // Check if user was provisioned by email
-          const q = query(collection(db, 'users'), where('email', '==', currentUser.email), limit(1));
-          const inviteSnap = await getDocs(q);
-          
-          let role = currentUser.email === 'riderezzy@gmail.com' ? 'admin' : 'viewer';
+          let role = isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer';
           let status = 'active';
+          let editorStatus = role === 'admin' ? 'approved' : 'none';
+          let isPremium = role === 'admin';
 
-          if (!inviteSnap.empty) {
-            const inviteData = inviteSnap.docs[0].data();
-            role = inviteData.role || role;
-            status = inviteData.status || status;
-            // Delete the placeholder record
-            await deleteDoc(doc(db, 'users', inviteSnap.docs[0].id));
+          try {
+            // Check if user was provisioned by email
+            const q = query(collection(db, 'users'), where('email', '==', currentUser.email), limit(1));
+            const inviteSnap = await getDocs(q);
+
+            if (!inviteSnap.empty) {
+              const inviteData = inviteSnap.docs[0].data();
+              role = inviteData.role || role;
+              status = inviteData.status || status;
+              editorStatus = inviteData.editorStatus || (role === 'editor' || role === 'admin' ? 'approved' : editorStatus);
+              isPremium = Boolean(inviteData.isPremium) || role === 'admin';
+
+              if (inviteSnap.docs[0].id !== currentUser.uid) {
+                await deleteDoc(doc(db, 'users', inviteSnap.docs[0].id));
+              }
+            }
+          } catch (inviteError) {
+            console.warn('Invite lookup skipped:', inviteError);
           }
 
           // New user registration
           await setDoc(userRef, {
             email: currentUser.email,
+            name: currentUser.displayName || currentUser.email,
             displayName: currentUser.displayName,
             role: role,
             joined: new Date().toLocaleDateString('en-CA').replace(/-/g, '.'),
-            status: status
+            status: status,
+            editorStatus,
+            isPremium
           });
           setUserRole(role as any);
         } else {
@@ -2104,9 +2124,13 @@ export default function App() {
             return;
           }
 
-          // Enforce super admin for riderezzy@gmail.com
-          if (currentUser.email === 'riderezzy@gmail.com' && data.role !== 'admin') {
-             await updateDoc(userRef, { role: 'admin' });
+          // Enforce super admin for the platform owner account.
+          if (isSuperAdminEmail(currentUser.email) && data.role !== 'admin') {
+             await updateDoc(userRef, {
+               role: 'admin',
+               editorStatus: 'approved',
+               isPremium: true
+             });
              setUserRole('admin');
           } else {
              setUserRole(data.role || 'viewer');
@@ -2487,7 +2511,16 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
             setOrderList={setOrderList}
           />
         );
-      case 'profile': return user ? <ProfilePage user={user} setCurrentPage={setCurrentPage} /> : (
+      case 'profile': return user ? (
+        <ProfilePage
+          user={user}
+          setCurrentPage={setCurrentPage}
+          stories={stories}
+          readingHistory={readingHistory}
+          orderList={orderList}
+          onSelectStory={clickStory}
+        />
+      ) : (
         <div className="min-h-screen pt-32 px-8 flex flex-col items-center justify-center font-mono text-center">
            <h2 className="text-2xl font-bold uppercase mb-4">Authentication Required</h2>
            <button onClick={handleGoogleLogin} className="border-2 border-brand-red text-brand-red px-6 py-2 uppercase tracking-widest text-xs font-bold hover:bg-brand-red hover:text-white transition-colors">Login with Google</button>
@@ -2589,15 +2622,6 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
       />
       
       <main className="relative overflow-x-hidden">
-        {currentPage === 'profile' && user && (
-          <ProfilePage 
-            user={user} 
-            setCurrentPage={setCurrentPage} 
-            stories={stories}
-            readingHistory={readingHistory}
-            orderList={orderList}
-          />
-        )}
         {renderPage()}
       </main>
       

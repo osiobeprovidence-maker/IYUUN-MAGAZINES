@@ -83,9 +83,17 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isSignedIn();
       allow list: if isAdmin();
-      allow create: if isSignedIn() && userId == request.auth.uid;
+      allow create: if isSignedIn() && (userId == request.auth.uid || isAdmin());
       allow update: if isSignedIn() && (
-        (userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'joined'])) ||
+        (userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName',
+          'name',
+          'bio',
+          'avatarUrl',
+          'editorStatus',
+          'isPremium',
+          'lastLogin'
+        ])) ||
         isAdmin()
       );
       allow delete: if isAdmin();

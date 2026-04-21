@@ -16,10 +16,14 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
+const firestoreDatabaseId = import.meta.env.VITE_FIREBASE_FIRESTORE_DB_ID?.trim();
 
 // Initialize Services
 export const auth = getAuth(app);
-export const db = getFirestore(app, import.meta.env.VITE_FIREBASE_FIRESTORE_DB_ID);
+export const db =
+  firestoreDatabaseId && firestoreDatabaseId !== '(default)'
+    ? getFirestore(app, firestoreDatabaseId)
+    : getFirestore(app);
 export const storage = getStorage(app);
 
 // Initialize Analytics (Browser-only)
