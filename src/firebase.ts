@@ -4,6 +4,23 @@ import { getFirestore, doc, getDoc, getDocFromServer, collection, getDocs, setDo
 import { getStorage, ref, uploadBytes, getDownloadURL, connectStorageEmulator } from 'firebase/storage';
 import { getAnalytics, isSupported } from 'firebase/analytics';
 
+const requiredFirebaseEnv = [
+  'VITE_FIREBASE_API_KEY',
+  'VITE_FIREBASE_AUTH_DOMAIN',
+  'VITE_FIREBASE_PROJECT_ID',
+  'VITE_FIREBASE_STORAGE_BUCKET',
+  'VITE_FIREBASE_MESSAGING_SENDER_ID',
+  'VITE_FIREBASE_APP_ID'
+] as const;
+
+const missingFirebaseEnv = requiredFirebaseEnv.filter((key) => !import.meta.env[key]);
+
+if (missingFirebaseEnv.length > 0) {
+  throw new Error(
+    `Missing Firebase environment variables: ${missingFirebaseEnv.join(', ')}. Add them in Vercel Project Settings -> Environment Variables.`
+  );
+}
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -16,14 +33,10 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const firestoreDatabaseId = import.meta.env.VITE_FIREBASE_FIRESTORE_DB_ID?.trim();
 
 // Initialize Services
 export const auth = getAuth(app);
-export const db =
-  firestoreDatabaseId && firestoreDatabaseId !== '(default)'
-    ? getFirestore(app, firestoreDatabaseId)
-    : getFirestore(app);
+export const db = getFirestore(app);
 export const storage = getStorage(app);
 
 // Initialize Analytics (Browser-only)

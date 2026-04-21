@@ -7,6 +7,11 @@ import { GoogleGenAI, Type } from '@google/genai';
 const SUPER_ADMIN_EMAIL = 'riderezzy@gmail.com';
 const normalizeEmail = (email?: string | null) => email?.trim().toLowerCase() || '';
 const isSuperAdminEmail = (email?: string | null) => normalizeEmail(email) === SUPER_ADMIN_EMAIL;
+const isFirestoreOfflineError = (error: unknown) =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code?: string }).code === 'unavailable';
 const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
 const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
@@ -1681,6 +1686,18 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
           setNewBio(initData.bio);
         }
       } catch (err) {
+        if (isFirestoreOfflineError(err)) {
+          setProfile({
+            name: user.displayName || user.email || 'Unknown',
+            email: user.email || '',
+            role: isSuperAdminEmail(user.email) ? 'admin' : 'viewer',
+            isPremium: isSuperAdminEmail(user.email),
+            editorStatus: isSuperAdminEmail(user.email) ? 'approved' : 'none',
+            bio: 'Profile sync is temporarily offline. Reconnect to refresh your account data.'
+          });
+          setNewBio('Profile sync is temporarily offline. Reconnect to refresh your account data.');
+          return;
+        }
         console.error(err);
       }
     };
@@ -1965,6 +1982,7 @@ export default function App() {
     return local ? JSON.parse(local) : [];
   });
   const [orderStatus, setOrderStatus] = useState<'idle' | 'success' | 'loading'>('idle');
+  const [firebaseWarning, setFirebaseWarning] = useState('');
   
   // Team & Orders state at root for dashboard overview
   interface TeamMember {
@@ -2073,72 +2091,82 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        const userRef = doc(db, 'users', currentUser.uid);
-        const snap = await getDoc(userRef);
-        
-        if (!snap.exists()) {
-          let role = isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer';
-          let status = 'active';
-          let editorStatus = role === 'admin' ? 'approved' : 'none';
-          let isPremium = role === 'admin';
+        try {
+          const userRef = doc(db, 'users', currentUser.uid);
+          const snap = await getDoc(userRef);
+          
+          if (!snap.exists()) {
+            let role = isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer';
+            let status = 'active';
+            let editorStatus = role === 'admin' ? 'approved' : 'none';
+            let isPremium = role === 'admin';
 
-          try {
-            // Check if user was provisioned by email
-            const q = query(collection(db, 'users'), where('email', '==', currentUser.email), limit(1));
-            const inviteSnap = await getDocs(q);
+            try {
+              // Check if user was provisioned by email
+              const q = query(collection(db, 'users'), where('email', '==', currentUser.email), limit(1));
+              const inviteSnap = await getDocs(q);
 
-            if (!inviteSnap.empty) {
-              const inviteData = inviteSnap.docs[0].data();
-              role = inviteData.role || role;
-              status = inviteData.status || status;
-              editorStatus = inviteData.editorStatus || (role === 'editor' || role === 'admin' ? 'approved' : editorStatus);
-              isPremium = Boolean(inviteData.isPremium) || role === 'admin';
+              if (!inviteSnap.empty) {
+                const inviteData = inviteSnap.docs[0].data();
+                role = inviteData.role || role;
+                status = inviteData.status || status;
+                editorStatus = inviteData.editorStatus || (role === 'editor' || role === 'admin' ? 'approved' : editorStatus);
+                isPremium = Boolean(inviteData.isPremium) || role === 'admin';
 
-              if (inviteSnap.docs[0].id !== currentUser.uid) {
-                await deleteDoc(doc(db, 'users', inviteSnap.docs[0].id));
+                if (inviteSnap.docs[0].id !== currentUser.uid) {
+                  await deleteDoc(doc(db, 'users', inviteSnap.docs[0].id));
+                }
               }
+            } catch (inviteError) {
+              console.warn('Invite lookup skipped:', inviteError);
             }
-          } catch (inviteError) {
-            console.warn('Invite lookup skipped:', inviteError);
-          }
 
-          // New user registration
-          await setDoc(userRef, {
-            email: currentUser.email,
-            name: currentUser.displayName || currentUser.email,
-            displayName: currentUser.displayName,
-            role: role,
-            joined: new Date().toLocaleDateString('en-CA').replace(/-/g, '.'),
-            status: status,
-            editorStatus,
-            isPremium
-          });
-          setUserRole(role as any);
-        } else {
-          const data = snap.data();
-          // Check if banned
-          if (data.status === 'banned') {
-            setUserRole('viewer'); // Or a higher state for banned to block all UI
-            signOut(auth);
-            alert("This identity has been restricted. Please contact central node.");
-            return;
-          }
-
-          // Enforce super admin for the platform owner account.
-          if (isSuperAdminEmail(currentUser.email) && data.role !== 'admin') {
-             await updateDoc(userRef, {
-               role: 'admin',
-               editorStatus: 'approved',
-               isPremium: true
-             });
-             setUserRole('admin');
+            // New user registration
+            await setDoc(userRef, {
+              email: currentUser.email,
+              name: currentUser.displayName || currentUser.email,
+              displayName: currentUser.displayName,
+              role: role,
+              joined: new Date().toLocaleDateString('en-CA').replace(/-/g, '.'),
+              status: status,
+              editorStatus,
+              isPremium
+            });
+            setUserRole(role as any);
           } else {
-             setUserRole(data.role || 'viewer');
+            const data = snap.data();
+            // Check if banned
+            if (data.status === 'banned') {
+              setUserRole('viewer'); // Or a higher state for banned to block all UI
+              signOut(auth);
+              alert("This identity has been restricted. Please contact central node.");
+              return;
+            }
+
+            // Enforce super admin for the platform owner account.
+            if (isSuperAdminEmail(currentUser.email) && data.role !== 'admin') {
+              await updateDoc(userRef, {
+                role: 'admin',
+                editorStatus: 'approved',
+                isPremium: true
+              });
+              setUserRole('admin');
+            } else {
+              setUserRole(data.role || 'viewer');
+            }
+          }
+          setFirebaseWarning('');
+        } catch (error) {
+          console.error('Auth bootstrap error:', error);
+          setUserRole(isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer');
+          if (isFirestoreOfflineError(error)) {
+            setFirebaseWarning('Firebase is connected to Auth, but Firestore is unavailable right now. Reader pages still work while we reconnect.');
           }
         }
       } else {
         setUserRole('viewer');
         setIsAdminMode(false);
+        setFirebaseWarning('');
       }
     });
     return () => unsubscribe();
@@ -2621,6 +2649,12 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
         requestPrint={requestPrint}
       />
       
+      {firebaseWarning && (
+        <div className="bg-yellow-100 border-b border-yellow-800 text-yellow-900 px-4 md:px-8 py-3 text-[10px] md:text-xs uppercase tracking-widest font-bold">
+          {firebaseWarning}
+        </div>
+      )}
+
       <main className="relative overflow-x-hidden">
         {renderPage()}
       </main>
