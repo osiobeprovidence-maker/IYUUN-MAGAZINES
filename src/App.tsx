@@ -1651,12 +1651,13 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
             avatarUrl: d.avatarUrl
           });
         } else {
+          const role = user.email === 'riderezzy@gmail.com' ? 'admin' : 'viewer';
           const initData = {
             name: user.displayName || user.email || 'Unknown',
             email: user.email || '',
-            role: 'viewer',
-            isPremium: false,
-            editorStatus: 'none'
+            role,
+            isPremium: role === 'admin', // Super admin gets premium by default
+            editorStatus: role === 'admin' ? 'active' : 'none'
           };
           await setDoc(doc(db, 'users', user.uid), initData);
           setProfile(initData);
@@ -1774,9 +1775,9 @@ const ProfilePage = ({ user, setCurrentPage }: { user: FirebaseUser, setCurrentP
             
             <div className="mt-12 flex items-center gap-4">
               <div className={`px-4 py-2 text-[10px] uppercase font-bold tracking-widest border-2 ${profile.role === 'admin' ? 'border-brand-red text-brand-red' : 'border-brand-black'}`}>
-                Role: {profile.role}
+                {profile.email === 'riderezzy@gmail.com' ? 'Role: Super Admin' : `Role: ${profile.role}`}
               </div>
-              {profile.isPremium && (
+              {(profile.isPremium || profile.email === 'riderezzy@gmail.com') && (
                 <div className="px-4 py-2 text-[10px] uppercase font-bold tracking-widest border-2 border-brand-red bg-brand-red text-white flex items-center gap-2">
                   <Activity size={12}/> Premium Active
                 </div>
