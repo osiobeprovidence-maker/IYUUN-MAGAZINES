@@ -39,6 +39,10 @@ service cloud.firestore {
 
     function isValidStory(data) {
       return data.keys().hasAll(['id', 'category', 'title', 'excerpt', 'aspect', 'type', 'date', 'ownerId', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'category', 'title', 'excerpt', 'content', 'image', 'video', 'aspect', 'type', 'date',
+          'ownerId', 'createdAt', 'likesCount', 'status', 'submittedAt', 'reviewedAt', 'reviewedBy', 'reviewNote', 'updatedAt'
+        ])
         && data.id is string && data.id.size() <= 128
         && data.category is string && data.category.size() <= 100
         && data.title is string && data.title.size() <= 200
@@ -48,7 +52,12 @@ service cloud.firestore {
         && data.date is string && data.date.size() <= 50
         && data.ownerId is string
         && data.createdAt is number
-        && (data.keys().size() <= 13); // optional content, image, video, likesCount
+        && (!('status' in data) || data.status in ['draft', 'pending_review', 'published', 'changes_requested'])
+        && (!('submittedAt' in data) || data.submittedAt is number)
+        && (!('reviewedAt' in data) || data.reviewedAt is number)
+        && (!('reviewedBy' in data) || data.reviewedBy is string)
+        && (!('reviewNote' in data) || (data.reviewNote is string && data.reviewNote.size() <= 500))
+        && (!('updatedAt' in data) || data.updatedAt is number);
     }
 
     function isValidAd(data) {
@@ -102,17 +111,21 @@ service cloud.firestore {
     match /stories/{storyId} {
       allow read: if true;
       allow create: if isEditor() && isValidStory(incoming()) && incoming().ownerId == request.auth.uid;
-      allow update: if (isEditor() && isValidStory(incoming()) && (
-        // Identity protection
-        incoming().ownerId == existing().ownerId &&
-        incoming().createdAt == existing().createdAt &&
-        // Action: standard edit
-        incoming().diff(existing()).affectedKeys().hasAll(['category', 'title', 'excerpt', 'content', 'image'])
-      )) || (
-        // Public engagement: Likes
-        isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['likesCount'])
+      allow update: if (
+        isSignedIn()
+        && incoming().diff(existing()).affectedKeys().hasOnly(['likesCount'])
+        && isValidStory(incoming())
+      ) || (
+        isEditor()
+        && isValidStory(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          existing().ownerId == request.auth.uid
+        )
       );
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || (isEditor() && existing().ownerId == request.auth.uid && existing().status in ['draft', 'changes_requested']);
     }
 
     match /categories/{catId} {

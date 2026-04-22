@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, ArrowRight, Menu, X, Play, Shield, Upload, Save, Trash2, Eye, Users, BarChart2, DollarSign, Megaphone, Activity, Heart, MessageCircle, Share2 } from 'lucide-react';
-import { db, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, getDocs, getDoc, setDoc, doc, deleteDoc, type FirebaseUser, query, orderBy, updateDoc, increment, addDoc, where, limit, storage, ref, uploadBytes, getDownloadURL } from './firebase';
+import { useMutation } from 'convex/react';
+import { api } from '../convex/_generated/api';
+import { db, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, getDocs, getDoc, setDoc, doc, deleteDoc, type FirebaseUser, query, orderBy, updateDoc, increment, addDoc, where, limit } from './firebase';
 import { GoogleGenAI, Type } from '@google/genai';
 
 const SUPER_ADMIN_EMAIL = 'riderezzy@gmail.com';
@@ -15,8 +17,38 @@ const isFirestoreOfflineError = (error: unknown) =>
 const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
 const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
+async function uploadFileToConvex(
+  file: File,
+  generateUploadUrl: () => Promise<string>,
+  getFileUrl: (args: { storageId: string }) => Promise<string | null>
+) {
+  const uploadUrl = await generateUploadUrl();
+  const uploadResponse = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream'
+    },
+    body: file
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error(`Convex upload failed with status ${uploadResponse.status}`);
+  }
+
+  const { storageId } = await uploadResponse.json();
+  const fileUrl = await getFileUrl({ storageId });
+
+  if (!fileUrl) {
+    throw new Error('Convex uploaded the file but did not return a usable URL.');
+  }
+
+  return fileUrl;
+}
+
 // --- TYPES ---
-type Page = 'index' | 'archive' | 'manifesto' | 'admin' | 'article' | 'search' | 'business' | 'about' | 'contact' | 'profile' | 'orders';
+type Page = 'index' | 'archive' | 'manifesto' | 'admin' | 'publish' | 'article' | 'search' | 'business' | 'about' | 'contact' | 'profile' | 'orders';
+type UserRole = 'admin' | 'editor' | 'viewer';
+type StoryStatus = 'draft' | 'pending_review' | 'published' | 'changes_requested';
 
 interface Order {
   id: string;
@@ -68,7 +100,18 @@ interface Story {
   ownerId?: string;
   createdAt?: number;
   likesCount?: number;
+  status?: StoryStatus;
+  submittedAt?: number;
+  reviewedAt?: number;
+  reviewedBy?: string;
+  reviewNote?: string;
+  updatedAt?: number;
 }
+
+const canAccessAdminConsole = (role: UserRole) => role === 'admin';
+const canAccessPublishDesk = (role: UserRole) => role === 'admin' || role === 'editor';
+const canModeratePublishing = (role: UserRole, email?: string | null) => role === 'admin' || isSuperAdminEmail(email);
+const isPublishedStory = (story: Story) => !story.status || story.status === 'published';
 
 // --- MOCK DATA ---
 const INITIAL_STORIES: Story[] = [
@@ -203,16 +246,14 @@ const NavBar = ({ isMenuOpen, setIsMenuOpen, currentPage, setCurrentPage }: { is
   );
 };
 
-const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleGoogleLogin, handleLogout, userRole, isAdminMode, setIsAdminMode, orderStatus, requestPrint }: { 
+const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleGoogleLogin, handleLogout, userRole, orderStatus, requestPrint }: { 
   isOpen: boolean, 
   onClose: () => void, 
   setCurrentPage: (p: Page) => void,
   user: FirebaseUser | null,
   handleGoogleLogin: () => void,
   handleLogout: () => void,
-  userRole: 'admin' | 'editor' | 'viewer',
-  isAdminMode: boolean,
-  setIsAdminMode: (v: boolean) => void,
+  userRole: UserRole,
   orderStatus: 'idle' | 'success' | 'loading',
   requestPrint: (id: string, title: string) => void
 }) => {
@@ -251,46 +292,42 @@ const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleGoogleLogin,
                 )}
               </div>
 
-              {/* Admin Mode Toggle */}
-              {(userRole === 'admin' || userRole === 'editor') && (
+              {canAccessPublishDesk(userRole) && (
                 <div className="mb-8 p-4 border border-brand-black flex items-center justify-between bg-white shadow-sm">
                    <div>
                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] mb-1">Access Control</p>
                      <p className="text-xs opacity-60">Session Identity: {userRole.toUpperCase()}</p>
                    </div>
-                   <button 
-                    onClick={() => {
-                      setIsAdminMode(!isAdminMode);
-                      if (!isAdminMode) {
-                        navigate('admin');
-                      } else {
-                        navigate('index');
-                      }
-                    }}
-                    className={`px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      isAdminMode 
-                        ? 'bg-brand-red text-white ring-2 ring-brand-red ring-offset-2' 
-                        : 'bg-brand-black text-white hover:bg-brand-gray/80'
-                    }`}
-                   >
-                     {isAdminMode ? 'Switch to Reader' : 'Switch to Editor Mode'}
-                   </button>
+                   <div className="flex items-center gap-2">
+                     <button
+                      onClick={() => navigate('publish')}
+                      className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-all bg-brand-black text-white hover:bg-brand-gray/80"
+                     >
+                       Publish Desk
+                     </button>
+                     {canAccessAdminConsole(userRole) && (
+                       <button
+                        onClick={() => navigate('admin')}
+                        className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-all bg-brand-red text-white hover:bg-brand-black"
+                       >
+                         Admin Console
+                       </button>
+                     )}
+                   </div>
                 </div>
               )}
 
               <ul className="space-y-4 font-display text-5xl md:text-7xl font-medium tracking-tighter uppercase">
-                {(isAdminMode ? [
-                  { name: 'Dashboard', id: 'admin' as Page },
-                  { name: 'Reader View', id: 'index' as Page },
-                  { name: 'Archives', id: 'archive' as Page },
-                ] : [
+                {[
                   { name: 'Home', id: 'index' as Page },
                   { name: 'Search', id: 'search' as Page },
                   { name: 'Archive', id: 'archive' as Page },
                   { name: 'Manifesto', id: 'manifesto' as Page },
                   { name: 'Partnerships', id: 'business' as Page },
-                  { name: 'About', id: 'about' as Page }
-                ]).map((item, idx) => (
+                  { name: 'About', id: 'about' as Page },
+                  ...(canAccessPublishDesk(userRole) ? [{ name: 'Publish', id: 'publish' as Page }] : []),
+                  ...(canAccessAdminConsole(userRole) ? [{ name: 'Admin', id: 'admin' as Page }] : [])
+                ].map((item, idx) => (
                   <motion.li 
                     key={item.name}
                     initial={{ opacity: 0, x: -30 }}
@@ -545,17 +582,19 @@ const AdminDashboard = ({
 
   // Orders State
   const [isFetchingOrders, setIsFetchingOrders] = useState(false);
+  const generateUploadUrl = useMutation(api.media.generateUploadUrl);
+  const getFileUrl = useMutation(api.media.getFileUrl);
 
   const isSuperAdmin = isSuperAdminEmail(user?.email);
 
   useEffect(() => {
-    if (activeTab === 'team') {
+    if (activeTab === 'team' && isSuperAdmin) {
       fetchTeam();
     }
     if (activeTab === 'orders') {
       fetchOrders();
     }
-  }, [activeTab]);
+  }, [activeTab, isSuperAdmin]);
 
   const fetchTeam = async () => {
     setIsFetchingTeam(true);
@@ -598,18 +637,12 @@ const AdminDashboard = ({
       let finalImageUrl = newImageUrl || 'https://picsum.photos/seed/' + generatedId + '/800/800?grayscale';
       let finalVideoUrl = newVideoUrl || undefined;
 
-      // Upload Image if present
       if (imageFile) {
-        const imageRef = ref(storage, `stories/${generatedId}/image_${imageFile.name}`);
-        await uploadBytes(imageRef, imageFile);
-        finalImageUrl = await getDownloadURL(imageRef);
+        finalImageUrl = await uploadFileToConvex(imageFile, generateUploadUrl, getFileUrl);
       }
 
-      // Upload Video if present
       if (videoFile) {
-        const videoRef = ref(storage, `stories/${generatedId}/video_${videoFile.name}`);
-        await uploadBytes(videoRef, videoFile);
-        finalVideoUrl = await getDownloadURL(videoRef);
+        finalVideoUrl = await uploadFileToConvex(videoFile, generateUploadUrl, getFileUrl);
       }
 
       const newStory: Story = {
@@ -689,15 +722,11 @@ const AdminDashboard = ({
       let finalVideoUrl = newAdVideoUrl || undefined;
 
       if (adImageFile) {
-        const adImageRef = ref(storage, `ads/${adId}/image_${adImageFile.name}`);
-        await uploadBytes(adImageRef, adImageFile);
-        finalImageUrl = await getDownloadURL(adImageRef);
+        finalImageUrl = await uploadFileToConvex(adImageFile, generateUploadUrl, getFileUrl);
       }
 
       if (adVideoFile) {
-        const adVideoRef = ref(storage, `ads/${adId}/video_${adVideoFile.name}`);
-        await uploadBytes(adVideoRef, adVideoFile);
-        finalVideoUrl = await getDownloadURL(adVideoRef);
+        finalVideoUrl = await uploadFileToConvex(adVideoFile, generateUploadUrl, getFileUrl);
       }
 
       const newAd: Ad = {
@@ -796,7 +825,7 @@ const AdminDashboard = ({
         <div className="flex items-center gap-3">
            <button onClick={() => setIsNavOpen(!isNavOpen)}><Menu size={24} /></button>
            <Shield size={20} className="text-brand-red" />
-           <span className="font-bold text-xs uppercase tracking-widest">Admin OS</span>
+           <span className="font-bold text-xs uppercase tracking-widest">Operations</span>
         </div>
       </div>
 
@@ -813,7 +842,7 @@ const AdminDashboard = ({
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-brand-black flex items-center justify-center text-white font-bold">I</div>
                 <div>
-                  <h2 className="text-sm font-bold uppercase tracking-tight">Admin Console</h2>
+                  <h2 className="text-sm font-bold uppercase tracking-tight">Operations Console</h2>
                   <p className="text-[10px] opacity-40 uppercase">v1.2.0-STABLE</p>
                 </div>
               </div>
@@ -823,7 +852,6 @@ const AdminDashboard = ({
             <nav className="space-y-1">
               {[
                 { id: 'overview', icon: Activity, label: 'Overview' },
-                { id: 'stories', icon: Upload, label: 'Editorials' },
                 { id: 'ads', icon: Megaphone, label: 'Ad Campaigns' },
                 { id: 'categories', icon: Search, label: 'Taxonomy' },
                 { id: 'team', icon: Users, label: 'Manage Team' },
@@ -995,7 +1023,7 @@ const AdminDashboard = ({
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[9px] opacity-40 uppercase">Or provide external URLs if preferred (uploads override URLs)</p>
+                        <p className="text-[9px] opacity-40 uppercase">Upload to Convex storage or paste hosted media URLs.</p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <input type="url" placeholder="IMAGE URL (OPTIONAL)" value={newImageUrl} onChange={(e) => setNewImageUrl(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-3 rounded-lg outline-none text-[10px]" />
                           <input type="url" placeholder="VIDEO URL (OPTIONAL)" value={newVideoUrl} onChange={(e) => setNewVideoUrl(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-3 rounded-lg outline-none text-[10px]" />
@@ -1041,25 +1069,29 @@ const AdminDashboard = ({
                       <input type="text" placeholder="Partner" value={newAdPartner} onChange={(e) => setNewAdPartner(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-3 rounded-lg outline-none uppercase text-[11px]" />
                       <input type="text" placeholder="Campaign Headline" value={newAdHeadline} onChange={(e) => setNewAdHeadline(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-3 rounded-lg outline-none uppercase text-[11px]" />
                        <input type="url" placeholder="Destination Link" value={newAdLink} onChange={(e) => setNewAdLink(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-3 rounded-lg outline-none text-[11px]" />
-                       
-                       <div className="grid grid-cols-2 gap-2">
-                         <div className="space-y-1">
-                           <label className="text-[8px] font-bold uppercase opacity-40">Creative (Image)</label>
-                           <label className="w-full bg-brand-gray/20 border border-brand-black/5 p-2 rounded-lg flex items-center justify-between cursor-pointer text-[9px] uppercase font-bold overflow-hidden">
-                             <span className="truncate">{adImageFile ? adImageFile.name : 'SELECT...'}</span>
-                             <input type="file" accept="image/*" onChange={(e) => setAdImageFile(e.target.files?.[0] || null)} className="hidden" />
-                             <Upload size={10} />
-                           </label>
-                         </div>
-                         <div className="space-y-1">
-                           <label className="text-[8px] font-bold uppercase opacity-40">Creative (Video)</label>
-                           <label className="w-full bg-brand-gray/20 border border-brand-black/5 p-2 rounded-lg flex items-center justify-between cursor-pointer text-[9px] uppercase font-bold overflow-hidden">
-                             <span className="truncate">{adVideoFile ? adVideoFile.name : 'SELECT...'}</span>
-                             <input type="file" accept="video/*" onChange={(e) => setAdVideoFile(e.target.files?.[0] || null)} className="hidden" />
-                             <Upload size={10} />
-                           </label>
-                         </div>
-                       </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-bold uppercase opacity-40">Creative (Image)</label>
+                          <label className="w-full bg-brand-gray/20 border border-brand-black/5 p-2 rounded-lg flex items-center justify-between cursor-pointer text-[9px] uppercase font-bold overflow-hidden">
+                            <span className="truncate">{adImageFile ? adImageFile.name : 'Select...'}</span>
+                            <input type="file" accept="image/*" onChange={(e) => setAdImageFile(e.target.files?.[0] || null)} className="hidden" />
+                            <Upload size={10} />
+                          </label>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-bold uppercase opacity-40">Creative (Video)</label>
+                          <label className="w-full bg-brand-gray/20 border border-brand-black/5 p-2 rounded-lg flex items-center justify-between cursor-pointer text-[9px] uppercase font-bold overflow-hidden">
+                            <span className="truncate">{adVideoFile ? adVideoFile.name : 'Select...'}</span>
+                            <input type="file" accept="video/*" onChange={(e) => setAdVideoFile(e.target.files?.[0] || null)} className="hidden" />
+                            <Upload size={10} />
+                          </label>
+                        </div>
+                      </div>
+                      <p className="text-[9px] opacity-40 uppercase">Upload to Convex storage or use hosted asset URLs.</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="url" placeholder="IMAGE URL" value={newAdImageUrl} onChange={(e) => setNewAdImageUrl(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-2 rounded-lg outline-none text-[10px]" />
+                        <input type="url" placeholder="VIDEO URL" value={newAdVideoUrl} onChange={(e) => setNewAdVideoUrl(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-2 rounded-lg outline-none text-[10px]" />
+                      </div>
                       <textarea placeholder="Campaign Narrative..." value={newAdCopy} onChange={(e) => setNewAdCopy(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-lg outline-none min-h-[120px] text-[11px]" />
                       <button onClick={addAd} disabled={!newAdPartner || !newAdHeadline || !newAdCopy || isSubmittingAd} className="w-full bg-brand-red text-white p-3 rounded-lg hover:bg-brand-black transition-colors font-bold uppercase tracking-widest text-[10px] disabled:opacity-30">
                         {isSubmittingAd ? 'Transmitting...' : 'Deploy Campaign'}
@@ -1250,7 +1282,7 @@ const AdminDashboard = ({
 
          {activeTab === 'media' && (
             <div className="max-w-6xl mx-auto space-y-12">
-               <h2 className="text-2xl font-bold uppercase tracking-tighter">Digital Archive // Storage Explorer</h2>
+                  <h2 className="text-2xl font-bold uppercase tracking-tighter">Digital Archive // Media Index</h2>
                
                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
                  {stories.filter(s => s.image || s.video).map(story => (
@@ -1295,7 +1327,7 @@ const AdminDashboard = ({
                {stories.length === 0 && ads.length === 0 && (
                  <div className="p-24 border border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-center">
                     <Upload size={48} className="opacity-10 mb-4" />
-                    <p className="text-[10px] uppercase font-bold tracking-widest opacity-30">No objects detected in cloud storage</p>
+                      <p className="text-[10px] uppercase font-bold tracking-widest opacity-30">No external avatar URLs detected yet</p>
                  </div>
                )}
             </div>
@@ -1639,6 +1671,296 @@ const ContactPage = () => {
   );
 };
 
+const PublishDesk = ({
+  user,
+  userRole,
+  categories,
+  setCurrentPage,
+  setStories
+}: {
+  user: FirebaseUser,
+  userRole: UserRole,
+  categories: Category[],
+  setCurrentPage: (p: Page) => void,
+  setStories: React.Dispatch<React.SetStateAction<Story[]>>
+}) => {
+  const [deskStories, setDeskStories] = useState<Story[]>([]);
+  const [isLoadingDesk, setIsLoadingDesk] = useState(true);
+  const [deskError, setDeskError] = useState('');
+  const [newTitle, setNewTitle] = useState('');
+  const [newCategory, setNewCategory] = useState('');
+  const [newContent, setNewContent] = useState('');
+  const [newImageUrl, setNewImageUrl] = useState('');
+  const [newVideoUrl, setNewVideoUrl] = useState('');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [reviewNoteDrafts, setReviewNoteDrafts] = useState<Record<string, string>>({});
+  const generateUploadUrl = useMutation(api.media.generateUploadUrl);
+  const getFileUrl = useMutation(api.media.getFileUrl);
+  const canReview = canModeratePublishing(userRole, user.email);
+
+  const refreshDeskStories = async () => {
+    setIsLoadingDesk(true);
+    try {
+      const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      const nextStories: Story[] = [];
+      snap.forEach((entry) => nextStories.push(entry.data() as Story));
+      setDeskStories(nextStories);
+      setStories(nextStories.filter(isPublishedStory));
+      setDeskError('');
+    } catch (error: any) {
+      console.error(error);
+      setDeskError(error.message || 'Failed to load publish queue.');
+    } finally {
+      setIsLoadingDesk(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshDeskStories();
+  }, []);
+
+  const buildStoryPayload = async (status: StoryStatus) => {
+    const generatedId = `story-${Date.now().toString().slice(-6)}`;
+    let finalImageUrl = newImageUrl || `https://picsum.photos/seed/${generatedId}/800/800?grayscale`;
+    let finalVideoUrl = newVideoUrl || undefined;
+
+    if (imageFile) {
+      finalImageUrl = await uploadFileToConvex(imageFile, generateUploadUrl, getFileUrl);
+    }
+
+    if (videoFile) {
+      finalVideoUrl = await uploadFileToConvex(videoFile, generateUploadUrl, getFileUrl);
+    }
+
+    const now = Date.now();
+
+    return {
+      id: generatedId,
+      category: newCategory.toUpperCase() || 'UNCATEGORIZED',
+      title: newTitle.toUpperCase(),
+      excerpt: newContent.slice(0, 100) + '...',
+      content: newContent,
+      image: finalImageUrl,
+      video: finalVideoUrl,
+      aspect: 'square' as const,
+      type: finalVideoUrl ? 'video' as const : 'image' as const,
+      date: new Date().toLocaleDateString('en-CA').replace(/-/g, '.'),
+      ownerId: user.uid,
+      createdAt: now,
+      updatedAt: now,
+      status,
+      submittedAt: status === 'pending_review' || status === 'published' ? now : undefined,
+      reviewedAt: status === 'published' && canReview ? now : undefined,
+      reviewedBy: status === 'published' && canReview ? (user.email || user.uid) : undefined,
+      reviewNote: ''
+    };
+  };
+
+  const saveStory = async (status: StoryStatus) => {
+    if (!newTitle || !newCategory || !newContent) return;
+    setIsSubmitting(true);
+    setDeskError('');
+    try {
+      const payload = await buildStoryPayload(status);
+      await setDoc(doc(db, 'stories', payload.id), payload);
+      setNewTitle('');
+      setNewCategory('');
+      setNewContent('');
+      setNewImageUrl('');
+      setNewVideoUrl('');
+      setImageFile(null);
+      setVideoFile(null);
+      await refreshDeskStories();
+    } catch (error: any) {
+      console.error(error);
+      setDeskError(error.message || 'Failed to save story.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const updateStoryStatus = async (story: Story, status: StoryStatus, reviewNote?: string) => {
+    try {
+      const nextStory: Story = {
+        ...story,
+        status,
+        updatedAt: Date.now(),
+        submittedAt: status === 'pending_review' || status === 'published' ? (story.submittedAt || Date.now()) : story.submittedAt,
+        reviewedAt: canReview ? Date.now() : story.reviewedAt,
+        reviewedBy: canReview ? (user.email || user.uid) : story.reviewedBy,
+        reviewNote: reviewNote ?? story.reviewNote
+      };
+      await setDoc(doc(db, 'stories', story.id), nextStory);
+      await refreshDeskStories();
+    } catch (error: any) {
+      console.error(error);
+      setDeskError(error.message || 'Failed to update review status.');
+    }
+  };
+
+  const deleteStory = async (storyId: string) => {
+    try {
+      await deleteDoc(doc(db, 'stories', storyId));
+      await refreshDeskStories();
+    } catch (error: any) {
+      console.error(error);
+      setDeskError(error.message || 'Failed to remove draft.');
+    }
+  };
+
+  const visibleStories = canReview
+    ? deskStories
+    : deskStories.filter((story) => story.ownerId === user.uid);
+
+  const approvalQueue = visibleStories.filter((story) => story.status === 'pending_review');
+  const myDrafts = visibleStories.filter((story) => story.status !== 'published');
+
+  return (
+    <div className="min-h-screen bg-[#F8F8F8] px-4 md:px-8 py-20 font-sans">
+      <div className="max-w-7xl mx-auto space-y-12">
+        <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.4em] text-brand-red font-bold mb-3">Editorial Workflow</p>
+            <h1 className="font-display text-5xl md:text-8xl tracking-tighter uppercase font-bold">Publish Desk</h1>
+            <p className="text-sm opacity-60 uppercase tracking-widest mt-3">
+              {canReview ? 'Submission inbox, approvals, and live publishing.' : 'Draft, submit, and track content reviews.'}
+            </p>
+          </div>
+          <button onClick={() => setCurrentPage('index')} className="border border-brand-black px-6 py-3 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-black hover:text-white transition-colors">
+            Reader View
+          </button>
+        </div>
+
+        {deskError && <div className="border border-brand-red bg-brand-red/10 text-brand-red p-4 text-[10px] uppercase font-bold tracking-widest">{deskError}</div>}
+
+        <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-12">
+          <div className="bg-white border border-brand-black/5 rounded-3xl p-8 shadow-sm space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-3xl uppercase tracking-tighter font-bold">New Submission</h2>
+              <span className="text-[10px] uppercase tracking-[0.3em] font-bold opacity-40">{canReview ? 'Chief Editor Access' : 'Contributor Access'}</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input type="text" placeholder="Headline" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl outline-none uppercase text-sm" />
+              {categories.length > 0 ? (
+                <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl outline-none uppercase text-xs font-bold">
+                  <option value="" disabled>Select Category</option>
+                  {categories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}
+                </select>
+              ) : (
+                <input type="text" placeholder="Category" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl outline-none uppercase text-sm" />
+              )}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl flex items-center justify-between cursor-pointer text-[10px] uppercase font-bold">
+                <span className="truncate">{imageFile ? imageFile.name : 'Attach Image'}</span>
+                <input type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} className="hidden" />
+                <Upload size={14} />
+              </label>
+              <label className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl flex items-center justify-between cursor-pointer text-[10px] uppercase font-bold">
+                <span className="truncate">{videoFile ? videoFile.name : 'Attach Video'}</span>
+                <input type="file" accept="video/*" onChange={(e) => setVideoFile(e.target.files?.[0] || null)} className="hidden" />
+                <Upload size={14} />
+              </label>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input type="url" placeholder="Hosted Image URL" value={newImageUrl} onChange={(e) => setNewImageUrl(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl outline-none text-[11px]" />
+              <input type="url" placeholder="Hosted Video URL" value={newVideoUrl} onChange={(e) => setNewVideoUrl(e.target.value)} className="w-full bg-brand-gray/20 border border-brand-black/5 p-4 rounded-xl outline-none text-[11px]" />
+            </div>
+            <textarea placeholder="Write the story body..." value={newContent} onChange={(e) => setNewContent(e.target.value)} className="w-full min-h-[320px] bg-brand-gray/20 border border-brand-black/5 p-5 rounded-2xl outline-none text-sm" />
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button onClick={() => saveStory('draft')} disabled={isSubmitting || !newTitle || !newCategory || !newContent} className="flex-1 border border-brand-black px-6 py-4 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-black hover:text-white transition-colors disabled:opacity-30">
+                {isSubmitting ? 'Saving...' : 'Save Draft'}
+              </button>
+              <button onClick={() => saveStory(canReview ? 'published' : 'pending_review')} disabled={isSubmitting || !newTitle || !newCategory || !newContent} className="flex-1 bg-brand-red text-white px-6 py-4 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-black transition-colors disabled:opacity-30">
+                {isSubmitting ? 'Routing...' : canReview ? 'Publish Now' : 'Send For Approval'}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-8">
+            <div className="bg-white border border-brand-black/5 rounded-3xl p-8 shadow-sm">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="font-display text-3xl uppercase tracking-tighter font-bold">{canReview ? 'Approval Inbox' : 'My Queue'}</h2>
+                <span className="text-[10px] uppercase tracking-[0.3em] font-bold opacity-40">{canReview ? `${approvalQueue.length} awaiting review` : `${myDrafts.length} active submissions`}</span>
+              </div>
+              {isLoadingDesk ? (
+                <div className="py-16 text-center text-[10px] uppercase tracking-widest font-bold opacity-30">Syncing publish desk...</div>
+              ) : visibleStories.length === 0 ? (
+                <div className="py-16 text-center text-[10px] uppercase tracking-widest font-bold opacity-30">No editorial items found yet.</div>
+              ) : (
+                <div className="space-y-4 max-h-[760px] overflow-y-auto pr-2">
+                  {visibleStories.map((story) => {
+                    const status = story.status || 'published';
+                    return (
+                      <div key={story.id} className="border border-brand-black/10 rounded-2xl p-5 space-y-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="text-[10px] uppercase tracking-[0.3em] text-brand-red font-bold mb-2">{story.category}</p>
+                            <h3 className="font-display text-2xl uppercase tracking-tight font-bold">{story.title}</h3>
+                            <p className="text-[11px] opacity-50 uppercase tracking-widest mt-2">
+                              {story.ownerId === user.uid ? 'Your submission' : `From ${story.reviewedBy || story.ownerId || 'Editorial team'}`}
+                            </p>
+                          </div>
+                          <span className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase ${
+                            status === 'published' ? 'bg-green-500 text-white' :
+                            status === 'pending_review' ? 'bg-yellow-500 text-white' :
+                            status === 'changes_requested' ? 'bg-brand-red text-white' :
+                            'bg-brand-black text-white'
+                          }`}>
+                            {status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <p className="text-sm opacity-70 line-clamp-3 italic">"{story.excerpt}"</p>
+                        {story.reviewNote && (
+                          <div className="border-l-2 border-brand-red pl-4 text-[11px] opacity-70">
+                            Review note: {story.reviewNote}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          {!canReview && (status === 'draft' || status === 'changes_requested') && (
+                            <button onClick={() => updateStoryStatus(story, 'pending_review', '')} className="border border-brand-black px-4 py-2 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-black hover:text-white transition-colors">
+                              Submit For Approval
+                            </button>
+                          )}
+                          {!canReview && status !== 'published' && (
+                            <button onClick={() => deleteStory(story.id)} className="border border-brand-red text-brand-red px-4 py-2 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-red hover:text-white transition-colors">
+                              Delete Draft
+                            </button>
+                          )}
+                          {canReview && status === 'pending_review' && (
+                            <>
+                              <button onClick={() => updateStoryStatus(story, 'published', reviewNoteDrafts[story.id] || '')} className="bg-brand-black text-white px-4 py-2 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-red transition-colors">
+                                Approve & Publish
+                              </button>
+                              <button onClick={() => updateStoryStatus(story, 'changes_requested', reviewNoteDrafts[story.id] || 'Please revise and resubmit.')} className="border border-brand-red text-brand-red px-4 py-2 text-[10px] uppercase tracking-widest font-bold hover:bg-brand-red hover:text-white transition-colors">
+                                Request Changes
+                              </button>
+                              <input
+                                type="text"
+                                value={reviewNoteDrafts[story.id] || ''}
+                                onChange={(e) => setReviewNoteDrafts((current) => ({ ...current, [story.id]: e.target.value }))}
+                                placeholder="Optional review note"
+                                className="flex-1 min-w-[220px] bg-brand-gray/20 border border-brand-black/5 px-4 py-2 rounded-xl outline-none text-[11px]"
+                              />
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList, onSelectStory }: { 
   user: FirebaseUser, 
   setCurrentPage: (p: Page) => void,
@@ -1651,8 +1973,12 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editingBio, setEditingBio] = useState(false);
+  const [editingAvatar, setEditingAvatar] = useState(false);
   const [newName, setNewName] = useState('');
   const [newBio, setNewBio] = useState('');
+  const [newAvatarUrl, setNewAvatarUrl] = useState('');
+  const generateUploadUrl = useMutation(api.media.generateUploadUrl);
+  const getFileUrl = useMutation(api.media.getFileUrl);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -1670,6 +1996,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
             bio: d.bio || 'Architect of the new Pan-African visual language.'
           });
           setNewBio(d.bio || 'Architect of the new Pan-African visual language.');
+          setNewAvatarUrl(d.avatarUrl || '');
         } else {
           const role = isSuperAdminEmail(user.email) ? 'admin' : 'viewer';
           const initData = {
@@ -1684,6 +2011,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
           await setDoc(doc(db, 'users', user.uid), initData);
           setProfile(initData);
           setNewBio(initData.bio);
+          setNewAvatarUrl(initData.avatarUrl || '');
         }
       } catch (err) {
         if (isFirestoreOfflineError(err)) {
@@ -1696,6 +2024,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
             bio: 'Profile sync is temporarily offline. Reconnect to refresh your account data.'
           });
           setNewBio('Profile sync is temporarily offline. Reconnect to refresh your account data.');
+          setNewAvatarUrl('');
           return;
         }
         console.error(err);
@@ -1737,17 +2066,29 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
     } catch(err) { console.error(err); }
   };
 
+  const handleUpdateAvatarUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const avatarUrl = newAvatarUrl.trim();
+      await updateDoc(doc(db, 'users', user.uid), { avatarUrl });
+      setProfile(p => p ? {...p, avatarUrl} : p);
+      setEditingAvatar(false);
+    } catch(err) {
+      console.error(err);
+    }
+  };
+
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsUploadingAvatar(true);
     try {
-      const avatarRef = ref(storage, `avatars/${user.uid}/${file.name}`);
-      await uploadBytes(avatarRef, file);
-      const url = await getDownloadURL(avatarRef);
-      await updateDoc(doc(db, 'users', user.uid), { avatarUrl: url });
-      setProfile(p => p ? {...p, avatarUrl: url} : p);
-    } catch(err) {
+      const avatarUrl = await uploadFileToConvex(file, generateUploadUrl, getFileUrl);
+      await updateDoc(doc(db, 'users', user.uid), { avatarUrl });
+      setProfile(p => p ? { ...p, avatarUrl } : p);
+      setNewAvatarUrl(avatarUrl);
+      setEditingAvatar(false);
+    } catch (err) {
       console.error(err);
     } finally {
       setIsUploadingAvatar(false);
@@ -1780,11 +2121,30 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
                     <Users size={40} className="opacity-20" />
                   )}
                 </div>
-                <label className="absolute inset-0 bg-brand-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer text-[10px] uppercase font-bold text-center p-2">
-                  {isUploadingAvatar ? '...' : 'Change Identity Patch'}
-                  <input type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} disabled={isUploadingAvatar} />
-                </label>
+                <div className="absolute inset-0 bg-brand-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 text-[10px] uppercase font-bold text-center p-2">
+                  <button type="button" onClick={() => setEditingAvatar(v => !v)}>
+                    {editingAvatar ? 'Close URL Editor' : 'Edit Avatar URL'}
+                  </button>
+                  <label className="cursor-pointer">
+                    {isUploadingAvatar ? 'Uploading...' : 'Upload To Convex'}
+                    <input type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} disabled={isUploadingAvatar} />
+                  </label>
+                </div>
               </div>
+              {editingAvatar && (
+                <form onSubmit={handleUpdateAvatarUrl} className="mb-6 space-y-2">
+                  <input
+                    type="url"
+                    value={newAvatarUrl}
+                    onChange={(e) => setNewAvatarUrl(e.target.value)}
+                    placeholder="https://example.com/avatar.jpg"
+                    className="w-full bg-brand-gray/20 border border-brand-black/10 p-3 outline-none text-[11px]"
+                  />
+                  <button type="submit" className="bg-brand-black text-white px-4 py-2 text-[10px] font-bold uppercase tracking-widest">
+                    Save Avatar URL
+                  </button>
+                </form>
+              )}
 
               <p className="text-[10px] uppercase tracking-[0.4em] text-brand-red font-bold mb-6 flex items-center gap-2"><Shield size={14}/> Identity Block</p>
               
@@ -1877,8 +2237,8 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
               <p className="text-sm font-light opacity-80 mb-6 max-w-[80%]">Join our collective of documentarians. Submit articles, photo essays, and visual studies.</p>
               
               {profile.role === 'admin' || profile.role === 'editor' ? (
-                <button onClick={() => setCurrentPage('admin')} className="border-2 border-brand-black text-brand-black uppercase text-[10px] tracking-widest font-bold px-6 py-3 w-full hover:bg-brand-black hover:text-white transition-colors">
-                  Open Admin Dashboard
+                <button onClick={() => setCurrentPage('publish')} className="border-2 border-brand-black text-brand-black uppercase text-[10px] tracking-widest font-bold px-6 py-3 w-full hover:bg-brand-black hover:text-white transition-colors">
+                  Open Publish Desk
                 </button>
               ) : profile.editorStatus === 'pending' ? (
                 <button disabled className="bg-yellow-100 border border-yellow-800 text-yellow-800 uppercase text-[10px] tracking-widest font-bold px-6 py-3 w-full cursor-not-allowed text-center">
@@ -1965,7 +2325,6 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
 };
 
 export default function App() {
-  const [isAdminMode, setIsAdminMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState<Page>('index');
@@ -1974,7 +2333,7 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [userRole, setUserRole] = useState<'admin' | 'editor' | 'viewer'>('viewer');
+  const [userRole, setUserRole] = useState<UserRole>('viewer');
   const [emailInput, setEmailInput] = useState('');
   const [newsletterStatus, setNewsletterStatus] = useState<'idle' | 'success'>('idle');
   const [readingHistory, setReadingHistory] = useState<string[]>(() => {
@@ -2041,10 +2400,11 @@ export default function App() {
         querySnapshot.forEach((doc) => {
           fetchedStories.push(doc.data() as Story);
         });
-        if (fetchedStories.length > 0) {
-           setStories(fetchedStories);
-        } else {
+        const publishedStories = fetchedStories.filter(isPublishedStory);
+        if (fetchedStories.length === 0) {
            setStories(INITIAL_STORIES);
+        } else {
+           setStories(publishedStories);
         }
       } catch (err) {
         console.error("Error fetching stories:", err);
@@ -2165,7 +2525,6 @@ export default function App() {
         }
       } else {
         setUserRole('viewer');
-        setIsAdminMode(false);
         setFirebaseWarning('');
       }
     });
@@ -2173,7 +2532,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (userRole === 'admin' || userRole === 'editor') {
+    if (userRole === 'admin') {
       const fetchDashboardData = async () => {
         try {
           const uQ = query(collection(db, 'users'), orderBy('joined', 'desc'));
@@ -2193,6 +2552,8 @@ export default function App() {
         } catch(e) { console.error("Dashboard Sync Error:", e); }
       };
       fetchDashboardData();
+    } else {
+      setTeam([]);
     }
   }, [userRole, stories]);
 
@@ -2523,7 +2884,7 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
         />
       );
       case 'admin': 
-        if (!user || userRole === 'viewer') return <div className="min-h-screen flex items-center justify-center font-mono uppercase tracking-widest text-[10px]">Access Denied // Admin Clearance Required</div>;
+        if (!user || !canAccessAdminConsole(userRole)) return <div className="min-h-screen flex items-center justify-center font-mono uppercase tracking-widest text-[10px]">Access Denied // Admin Clearance Required</div>;
         return (
           <AdminDashboard 
             stories={stories} 
@@ -2537,6 +2898,17 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
             setTeam={setTeam}
             orderList={orderList}
             setOrderList={setOrderList}
+          />
+        );
+      case 'publish':
+        if (!user || !canAccessPublishDesk(userRole)) return <div className="min-h-screen flex items-center justify-center font-mono uppercase tracking-widest text-[10px]">Access Denied // Editorial Clearance Required</div>;
+        return (
+          <PublishDesk
+            user={user}
+            userRole={userRole}
+            categories={categories}
+            setCurrentPage={setCurrentPage}
+            setStories={setStories}
           />
         );
       case 'profile': return user ? (
@@ -2643,8 +3015,6 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
         handleGoogleLogin={handleGoogleLogin}
         handleLogout={handleLogout}
         userRole={userRole} 
-        isAdminMode={isAdminMode} 
-        setIsAdminMode={setIsAdminMode} 
         orderStatus={orderStatus}
         requestPrint={requestPrint}
       />
@@ -2659,7 +3029,7 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
         {renderPage()}
       </main>
       
-      {!isAdminMode && currentPage !== 'admin' && <AdFooter ads={ads} />}
+      {currentPage !== 'admin' && currentPage !== 'publish' && <AdFooter ads={ads} />}
       
       <footer className="bg-brand-black text-[#F8F8F8] px-4 md:px-8 py-20 flex flex-col gap-16">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-12 border-b border-white/10 pb-20">
