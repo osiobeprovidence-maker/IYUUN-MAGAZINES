@@ -8,7 +8,14 @@
  * @module
  */
 
+import type * as ads from "../ads.js";
+import type * as categories from "../categories.js";
+import type * as comments from "../comments.js";
 import type * as media from "../media.js";
+import type * as orders from "../orders.js";
+import type * as stories from "../stories.js";
+import type * as subscribers from "../subscribers.js";
+import type * as users from "../users.js";
 
 import type {
   ApiFromModules,
@@ -17,7 +24,14 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  ads: typeof ads;
+  categories: typeof categories;
+  comments: typeof comments;
   media: typeof media;
+  orders: typeof orders;
+  stories: typeof stories;
+  subscribers: typeof subscribers;
+  users: typeof users;
 }>;
 
 /**

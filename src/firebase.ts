@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, connectAuthEmulator, User } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, onIdTokenChanged, connectAuthEmulator, User } from 'firebase/auth';
 import { getFirestore, doc, getDoc, getDocFromServer, collection, getDocs, setDoc, query, orderBy, deleteDoc, updateDoc, increment, addDoc, where, serverTimestamp, limit, connectFirestoreEmulator } from 'firebase/firestore';
 import { getAnalytics, isSupported } from 'firebase/analytics';
 
@@ -64,6 +64,7 @@ export {
   signInWithPopup, 
   signOut, 
   onAuthStateChanged, 
+  onIdTokenChanged,
   doc, 
   getDoc, 
   getDocFromServer, 

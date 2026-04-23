@@ -1,10 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, ArrowRight, Menu, X, Play, Shield, Upload, Save, Trash2, Eye, Users, BarChart2, DollarSign, Megaphone, Activity, Heart, MessageCircle, Share2 } from 'lucide-react';
-import { useMutation } from 'convex/react';
+import { useMutation, useQuery } from 'convex/react';
 import { api } from '../convex/_generated/api';
-import { db, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, getDocs, getDoc, setDoc, doc, deleteDoc, type FirebaseUser, query, orderBy, updateDoc, increment, addDoc, where, limit } from './firebase';
+import type { Id } from '../convex/_generated/dataModel';
+import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, type FirebaseUser } from './firebase';
 import { GoogleGenAI, Type } from '@google/genai';
+
+const usersApi = (api as any).users;
+const adsApi = (api as any).ads;
+const subscribersApi = (api as any).subscribers;
 
 const SUPER_ADMIN_EMAIL = 'riderezzy@gmail.com';
 const normalizeEmail = (email?: string | null) => email?.trim().toLowerCase() || '';
@@ -51,7 +56,7 @@ type UserRole = 'admin' | 'editor' | 'viewer';
 type StoryStatus = 'draft' | 'pending_review' | 'published' | 'changes_requested';
 
 interface Order {
-  id: string;
+  id: string | Id<'orders'>;
   userEmail: string;
   storyId: string;
   storyTitle: string;
@@ -73,9 +78,26 @@ interface Ad {
   clicks?: number;
 }
 
+type ConvexAdInput = Omit<Ad, 'id'> & { adId: string };
+
+const toConvexAdInput = (ad: Ad): ConvexAdInput => ({
+  adId: ad.id,
+  partner: ad.partner,
+  headline: ad.headline,
+  copy: ad.copy,
+  image: ad.image,
+  video: ad.video,
+  link: ad.link,
+  isActive: ad.isActive,
+  type: ad.type,
+  createdAt: ad.createdAt,
+  clicks: ad.clicks ?? 0,
+});
+
 interface Category {
-  id: string;
+  id: string | Id<'categories'>;
   name: string;
+  slug?: string;
 }
 
 interface Comment {
@@ -84,6 +106,20 @@ interface Comment {
   author: string;
   text: string;
   createdAt: number;
+}
+
+interface UserProfile {
+  id: string | Id<'users'>;
+  email: string;
+  name: string;
+  role: UserRole;
+  joined: string;
+  status: 'active' | 'banned';
+  editorStatus: 'none' | 'pending' | 'approved';
+  isPremium: boolean;
+  avatarUrl?: string;
+  bio?: string;
+  lastSeenAt?: number;
 }
 
 interface Story {
@@ -107,6 +143,91 @@ interface Story {
   reviewNote?: string;
   updatedAt?: number;
 }
+
+type ConvexStoryInput = Omit<
+  Story,
+  'id' | 'createdAt' | 'status'
+> & {
+  storyId: string;
+  createdAt: number;
+  status: StoryStatus;
+};
+
+const toConvexStoryInput = (story: Story): ConvexStoryInput => ({
+  storyId: story.id,
+  category: story.category,
+  title: story.title,
+  excerpt: story.excerpt,
+  content: story.content,
+  image: story.image,
+  video: story.video,
+  aspect: story.aspect,
+  type: story.type,
+  date: story.date,
+  ownerId: story.ownerId,
+  createdAt: story.createdAt ?? Date.now(),
+  updatedAt: story.updatedAt,
+  likesCount: story.likesCount ?? 0,
+  status: story.status ?? 'published',
+  submittedAt: story.submittedAt,
+  reviewedAt: story.reviewedAt,
+  reviewedBy: story.reviewedBy,
+  reviewNote: story.reviewNote,
+});
+
+const hasRenderableMedia = (story: Pick<Story, 'image' | 'video' | 'type'>) =>
+  Boolean((story.type === 'video' ? story.video : story.image) || story.image || story.video);
+
+const StoryMediaPlaceholder = ({ label, className = '' }: { label: string; className?: string }) => (
+  <div className={`w-full h-full min-h-[16rem] bg-[linear-gradient(135deg,#111_0%,#2a2a2a_55%,#5f0f16_100%)] text-white flex flex-col justify-between p-6 ${className}`}>
+    <span className="text-[10px] uppercase tracking-[0.35em] opacity-60">IYUUN Archive</span>
+    <div>
+      <p className="text-[10px] uppercase tracking-[0.3em] text-brand-red mb-3">Media Pending</p>
+      <p className="font-display text-2xl uppercase tracking-tight leading-none">{label}</p>
+    </div>
+  </div>
+);
+
+const StoryMedia = ({
+  story,
+  alt,
+  className = '',
+  interactive = false,
+}: {
+  story: Pick<Story, 'title' | 'image' | 'video' | 'type'>;
+  alt: string;
+  className?: string;
+  interactive?: boolean;
+}) => {
+  if (story.type === 'video' && story.video) {
+    return (
+      <video
+        src={story.video}
+        className={className}
+        muted
+        loop
+        playsInline
+        autoPlay={!interactive}
+        onMouseEnter={interactive ? (e) => e.currentTarget.play() : undefined}
+        onMouseLeave={interactive ? (e) => e.currentTarget.pause() : undefined}
+      />
+    );
+  }
+
+  if (story.image) {
+    return <img src={story.image} alt={alt} className={className} referrerPolicy="no-referrer" />;
+  }
+
+  return <StoryMediaPlaceholder label={story.title} className={className} />;
+};
+
+const EmptyStoryState = ({ title, detail }: { title: string; detail: string }) => (
+  <div className="border border-brand-black bg-white p-8 md:p-12 text-center">
+    <p className="text-[10px] uppercase tracking-[0.35em] text-brand-red mb-4">Archive Status</p>
+    <h3 className="font-display text-3xl md:text-5xl uppercase tracking-tight mb-4">{title}</h3>
+    <p className="max-w-2xl mx-auto text-sm md:text-base opacity-70 leading-relaxed">{detail}</p>
+  </div>
+);
 
 const canAccessAdminConsole = (role: UserRole) => role === 'admin';
 const canAccessPublishDesk = (role: UserRole) => role === 'admin' || role === 'editor';
@@ -408,38 +529,30 @@ const ArticleCard = ({ story, idx, onClick }: { story: Story, idx: number, onCli
           story.aspect === 'portrait' ? 'aspect-[3/4.5]' : 
           story.aspect === 'landscape' ? 'aspect-[16/9]' : 'aspect-square'
         }`}>
-          {story.type === 'video' ? (
-            <div className="absolute inset-0 bg-black">
-              <video 
-                src={story.video} 
-                className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 opacity-60 group-hover:opacity-100"
-                autoPlay 
-                muted 
-                loop 
-                playsInline
-              />
-              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                 <div className="w-16 h-16 rounded-full border border-white flex items-center justify-center backdrop-blur-sm">
-                    <Play className="text-white fill-white ml-1" size={24} />
-                 </div>
-              </div>
-            </div>
-          ) : (
-            <img 
-              src={story.image} 
-              alt={story.title}
-              referrerPolicy="no-referrer"
-              className="absolute inset-0 w-full h-full object-cover filter grayscale group-hover:grayscale-0 group-hover:scale-105 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
-            />
+          <StoryMedia
+            story={story}
+            alt={story.title}
+            className="absolute inset-0 w-full h-full object-cover filter grayscale group-hover:grayscale-0 group-hover:scale-105 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
+          />
+          {story.type === 'video' && story.video && (
+            <div className="absolute inset-0 bg-black/40 transition-opacity duration-700 group-hover:opacity-0" />
           )}
           
           <div className="absolute top-6 left-6 bg-white px-3 py-1.5 text-[9px] font-bold tracking-[0.3em] uppercase border border-brand-black shadow-sm z-10">
             {story.type} // {story.id}
           </div>
           
-          {story.type === 'video' && (
+          {story.type === 'video' && story.video && (
             <div className="absolute bottom-6 left-6 z-10">
                <span className="text-[10px] text-white font-bold uppercase tracking-widest bg-brand-red px-2 py-0.5">Live View</span>
+            </div>
+          )}
+
+          {story.type === 'video' && story.video && (
+            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+               <div className="w-16 h-16 rounded-full border border-white flex items-center justify-center backdrop-blur-sm">
+                  <Play className="text-white fill-white ml-1" size={24} />
+               </div>
             </div>
           )}
         </div>
@@ -523,16 +636,23 @@ const ArchivePage = ({ stories, onSelect }: { stories: Story[], onSelect: (s: St
         <h1 className="font-display text-5xl md:text-8xl font-bold tracking-tighter uppercase">Chronicles</h1>
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-24">
-        {stories.map((story, idx) => (
-          <ArticleCard 
-            key={story.id} 
-            story={story} 
-            idx={idx} 
-            onClick={() => onSelect(story)}
-          />
-        ))}
-      </div>
+      {stories.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-24">
+          {stories.map((story, idx) => (
+            <ArticleCard 
+              key={story.id} 
+              story={story} 
+              idx={idx} 
+              onClick={() => onSelect(story)}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyStoryState
+          title="No Stories Published Yet"
+          detail="The public archive is still being assembled. Once stories are approved, they will appear here automatically."
+        />
+      )}
     </div>
   );
 };
@@ -582,48 +702,47 @@ const AdminDashboard = ({
 
   // Orders State
   const [isFetchingOrders, setIsFetchingOrders] = useState(false);
+  const convexOrders = useQuery(api.orders.listAll);
   const generateUploadUrl = useMutation(api.media.generateUploadUrl);
   const getFileUrl = useMutation(api.media.getFileUrl);
+  const upsertAdInConvex = useMutation(adsApi.upsert);
+  const createCategoryInConvex = useMutation(api.categories.create);
+  const removeCategoryFromConvex = useMutation(api.categories.remove);
+  const upsertStoryInConvex = useMutation(api.stories.upsert);
+  const removeStoryFromConvex = useMutation(api.stories.remove);
+  const updateOrderStatusInConvex = useMutation(api.orders.updateStatus);
+  const inviteUserInConvex = useMutation(usersApi.inviteUser);
+  const updateUserRoleInConvex = useMutation(usersApi.updateUserRole);
+  const toggleUserBanInConvex = useMutation(usersApi.toggleUserBan);
+  const removeUserFromConvex = useMutation(usersApi.removeUser);
 
   const isSuperAdmin = isSuperAdminEmail(user?.email);
+  const convexTeam = useQuery(
+    activeTab === 'team' && isSuperAdmin ? usersApi.listTeam : 'skip',
+  );
 
   useEffect(() => {
     if (activeTab === 'team' && isSuperAdmin) {
-      fetchTeam();
+      setIsFetchingTeam(convexTeam === undefined);
     }
     if (activeTab === 'orders') {
-      fetchOrders();
+      setIsFetchingOrders(convexOrders === undefined);
     }
-  }, [activeTab, isSuperAdmin]);
+  }, [activeTab, isSuperAdmin, convexOrders]);
 
-  const fetchTeam = async () => {
-    setIsFetchingTeam(true);
-    try {
-      const q = query(collection(db, 'users'), orderBy('joined', 'desc'));
-      const snap = await getDocs(q);
-      const members: any[] = [];
-      snap.forEach(d => {
-        members.push({ id: d.id, ...d.data() });
-      });
-      setTeam(members);
-    } catch(err) {
-      console.error(err);
-    } finally {
+  useEffect(() => {
+    if (convexTeam) {
+      setTeam(convexTeam as any[]);
       setIsFetchingTeam(false);
     }
-  };
+  }, [convexTeam, setTeam]);
 
-  const fetchOrders = async () => {
-    setIsFetchingOrders(true);
-    try {
-      const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
-      const snap = await getDocs(q);
-      const fetched: Order[] = [];
-      snap.forEach(d => fetched.push({ id: d.id, ...d.data() } as Order));
-      setOrderList(fetched);
-    } catch(err) { console.error(err); }
-    finally { setIsFetchingOrders(false); }
-  };
+  useEffect(() => {
+    if (convexOrders) {
+      setOrderList(convexOrders);
+      setIsFetchingOrders(false);
+    }
+  }, [convexOrders, setOrderList]);
 
   const navTo = (tab: any) => { setActiveTab(tab); setIsNavOpen(false); };
 
@@ -660,7 +779,7 @@ const AdminDashboard = ({
         createdAt: Date.now()
       };
       
-      await setDoc(doc(db, 'stories', generatedId), newStory);
+      await upsertStoryInConvex(toConvexStoryInput(newStory));
       setStories([newStory, ...stories]);
       setNewTitle('');
       setNewCategory('');
@@ -679,7 +798,7 @@ const AdminDashboard = ({
 
   const removeStory = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'stories', id));
+      await removeStoryFromConvex({ storyId: id });
       setStories(stories.filter(item => item.id !== id));
     } catch (error: any) {
        setStoryErrorMsg(error.message || 'Failed to delete');
@@ -690,13 +809,13 @@ const AdminDashboard = ({
     if(!newCategoryInput) return;
     setIsSubmittingCategory(true);
     try {
-      const generatedId = newCategoryInput.replace(/\s+/g, '-').toLowerCase() + '-' + Date.now().toString().slice(-4);
-      const newCat: Category = {
-        id: generatedId,
-        name: newCategoryInput.toUpperCase(),
-      };
-      await setDoc(doc(db, 'categories', generatedId), newCat);
-      setCategories([...categories, newCat]);
+      const newCat = await createCategoryInConvex({ name: newCategoryInput });
+      setCategories((prev) => {
+        if (prev.some((category) => category.id === newCat.id)) {
+          return prev;
+        }
+        return [...prev, newCat];
+      });
       setNewCategoryInput('');
     } catch(err) {
       console.error(err);
@@ -707,7 +826,7 @@ const AdminDashboard = ({
 
   const removeCategory = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'categories', id));
+      await removeCategoryFromConvex({ categoryId: id as Id<'categories'> });
       setCategories(categories.filter(c => c.id !== id));
     } catch(err) { console.error(err); }
   };
@@ -742,7 +861,7 @@ const AdminDashboard = ({
         createdAt: Date.now(),
         clicks: 0
       };
-      await setDoc(doc(db, 'ads', adId), newAd);
+      await upsertAdInConvex(toConvexAdInput(newAd));
       setAds([newAd, ...ads]);
       setNewAdPartner('');
       setNewAdHeadline('');
@@ -762,7 +881,7 @@ const AdminDashboard = ({
   const toggleAd = async (ad: Ad) => {
     try {
       const updatedAd = { ...ad, isActive: !ad.isActive };
-      await setDoc(doc(db, 'ads', ad.id), updatedAd);
+      await upsertAdInConvex(toConvexAdInput(updatedAd));
       setAds(ads.map(a => a.id === ad.id ? updatedAd : a));
     } catch(err) {
       console.error(err);
@@ -772,49 +891,43 @@ const AdminDashboard = ({
   const updateUserRole = async (memberId: string, newRole: string) => {
     if (!isSuperAdmin) return;
     try {
-      await updateDoc(doc(db, 'users', memberId), { role: newRole.toLowerCase() });
-      setTeam(team.map(m => m.id === memberId ? { ...m, role: newRole } : m));
+      await updateUserRoleInConvex({ userId: memberId as Id<'users'>, role: newRole.toLowerCase() as UserRole });
     } catch(err) { console.error(err); }
   };
 
   const banUser = async (memberId: string, currentStatus: string) => {
     if (!isSuperAdmin) return;
     try {
-      const newStatus = currentStatus === 'banned' ? 'active' : 'banned';
-      await updateDoc(doc(db, 'users', memberId), { status: newStatus });
-      setTeam(team.map(m => m.id === memberId ? { ...m, status: newStatus } : m));
+      void currentStatus;
+      await toggleUserBanInConvex({ userId: memberId as Id<'users'> });
     } catch(err) { console.error(err); }
   };
 
   const removeUser = async (memberId: string) => {
     if (!isSuperAdmin) return;
     try {
-      await deleteDoc(doc(db, 'users', memberId));
-      setTeam(team.filter(m => m.id !== memberId));
+      await removeUserFromConvex({ userId: memberId as Id<'users'> });
     } catch(err) { console.error(err); }
   };
 
   const updateOrderStatus = async (orderId: string, newStatus: Order['status']) => {
     if (!isSuperAdmin) return;
     try {
-      await updateDoc(doc(db, 'orders', orderId), { status: newStatus });
-      setOrderList(orderList.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+      await updateOrderStatusInConvex({ orderId: orderId as Id<'orders'>, status: newStatus });
     } catch(err) { console.error(err); }
   };
 
   const addEditor = async () => {
     if(!newEditorEmail || !isSuperAdmin) return;
-    // For now we just invite via email by creating a placeholder user record
-    const id = `pending-${Date.now()}`;
-    const newMember = { 
-      email: newEditorEmail, 
-      role: newEditorRole.toLowerCase(), 
-      joined: new Date().toLocaleDateString('en-CA').replace(/-/g, '.'),
-      status: 'active'
-    };
-    await setDoc(doc(db, 'users', id), newMember);
-    setTeam([{ id, ...newMember }, ...team]);
-    setNewEditorEmail('');
+    try {
+      await inviteUserInConvex({
+        email: newEditorEmail,
+        role: newEditorRole.toLowerCase() as UserRole,
+      });
+      setNewEditorEmail('');
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   return (
@@ -1285,13 +1398,14 @@ const AdminDashboard = ({
                   <h2 className="text-2xl font-bold uppercase tracking-tighter">Digital Archive // Media Index</h2>
                
                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                 {stories.filter(s => s.image || s.video).map(story => (
+                 {stories.filter(hasRenderableMedia).map(story => (
                    <div key={story.id} className="aspect-square bg-white border border-brand-black/5 rounded-lg overflow-hidden group relative shadow-sm hover:border-brand-red transition-all">
-                     {story.type === 'video' ? (
-                       <video src={story.video} className="w-full h-full object-cover grayscale group-hover:grayscale-0" muted loop onMouseEnter={e => e.currentTarget.play()} onMouseLeave={e => e.currentTarget.pause()} />
-                     ) : (
-                       <img src={story.image} className="w-full h-full object-cover grayscale group-hover:grayscale-0 group-hover:scale-110 transition-transform" />
-                     )}
+                     <StoryMedia
+                       story={story}
+                       alt={story.title}
+                       className="w-full h-full object-cover grayscale group-hover:grayscale-0 group-hover:scale-110 transition-transform"
+                       interactive={story.type === 'video'}
+                     />
                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
                         <p className="text-[8px] text-white font-bold uppercase truncate">{story.title}</p>
                         <p className="text-[7px] text-brand-red font-bold uppercase">{story.type}</p>
@@ -1341,11 +1455,12 @@ const AdminDashboard = ({
 const AdFooter = ({ ads }: { ads: Ad[] }) => {
   const activeAds = ads.filter(a => a.isActive);
   const activeAd = activeAds.length > 0 ? activeAds[0] : null;
+  const incrementAdClicks = useMutation(adsApi.incrementClicks);
 
   const handleAdClick = async () => {
     if (!activeAd) return;
     try {
-      await updateDoc(doc(db, 'ads', activeAd.id), { clicks: increment(1) });
+      await incrementAdClicks({ adId: activeAd.id });
       window.open(activeAd.link, '_blank');
     } catch(e) { 
       console.error(e);
@@ -1431,13 +1546,20 @@ const SearchPage = ({ stories, onSelect }: { stories: Story[], onSelect: (s: Sto
             <p className="text-xs uppercase tracking-widest opacity-50 font-bold mb-8">
               {filtered.length} {filtered.length === 1 ? 'Result' : 'Results'} for "{query}"
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              <AnimatePresence>
-                {filtered.map((story, idx) => (
-                  <ArticleCard key={story.id} story={story} idx={idx} onClick={() => onSelect(story)} />
-                ))}
-              </AnimatePresence>
-            </div>
+            {filtered.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <AnimatePresence>
+                  {filtered.map((story, idx) => (
+                    <ArticleCard key={story.id} story={story} idx={idx} onClick={() => onSelect(story)} />
+                  ))}
+                </AnimatePresence>
+              </div>
+            ) : (
+              <EmptyStoryState
+                title="No Matches Found"
+                detail="Try a broader keyword, a category name, or explore the recent additions to reopen the archive trail."
+              />
+            )}
           </div>
         )}
         
@@ -1684,6 +1806,7 @@ const PublishDesk = ({
   setCurrentPage: (p: Page) => void,
   setStories: React.Dispatch<React.SetStateAction<Story[]>>
 }) => {
+  const convexDeskStories = useQuery(api.stories.listAll);
   const [deskStories, setDeskStories] = useState<Story[]>([]);
   const [isLoadingDesk, setIsLoadingDesk] = useState(true);
   const [deskError, setDeskError] = useState('');
@@ -1698,29 +1821,21 @@ const PublishDesk = ({
   const [reviewNoteDrafts, setReviewNoteDrafts] = useState<Record<string, string>>({});
   const generateUploadUrl = useMutation(api.media.generateUploadUrl);
   const getFileUrl = useMutation(api.media.getFileUrl);
+  const upsertStoryInConvex = useMutation(api.stories.upsert);
+  const removeStoryFromConvex = useMutation(api.stories.remove);
   const canReview = canModeratePublishing(userRole, user.email);
 
-  const refreshDeskStories = async () => {
-    setIsLoadingDesk(true);
-    try {
-      const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
-      const snap = await getDocs(q);
-      const nextStories: Story[] = [];
-      snap.forEach((entry) => nextStories.push(entry.data() as Story));
-      setDeskStories(nextStories);
-      setStories(nextStories.filter(isPublishedStory));
-      setDeskError('');
-    } catch (error: any) {
-      console.error(error);
-      setDeskError(error.message || 'Failed to load publish queue.');
-    } finally {
-      setIsLoadingDesk(false);
-    }
-  };
-
   useEffect(() => {
-    refreshDeskStories();
-  }, []);
+    if (convexDeskStories) {
+      setDeskStories(convexDeskStories);
+      setStories(convexDeskStories.filter(isPublishedStory));
+      setDeskError('');
+      setIsLoadingDesk(false);
+      return;
+    }
+
+    setIsLoadingDesk(true);
+  }, [convexDeskStories, setStories]);
 
   const buildStoryPayload = async (status: StoryStatus) => {
     const generatedId = `story-${Date.now().toString().slice(-6)}`;
@@ -1756,7 +1871,7 @@ const PublishDesk = ({
       reviewedAt: status === 'published' && canReview ? now : undefined,
       reviewedBy: status === 'published' && canReview ? (user.email || user.uid) : undefined,
       reviewNote: ''
-    };
+    } satisfies Story;
   };
 
   const saveStory = async (status: StoryStatus) => {
@@ -1765,7 +1880,7 @@ const PublishDesk = ({
     setDeskError('');
     try {
       const payload = await buildStoryPayload(status);
-      await setDoc(doc(db, 'stories', payload.id), payload);
+      await upsertStoryInConvex(toConvexStoryInput(payload));
       setNewTitle('');
       setNewCategory('');
       setNewContent('');
@@ -1773,7 +1888,6 @@ const PublishDesk = ({
       setNewVideoUrl('');
       setImageFile(null);
       setVideoFile(null);
-      await refreshDeskStories();
     } catch (error: any) {
       console.error(error);
       setDeskError(error.message || 'Failed to save story.');
@@ -1793,8 +1907,7 @@ const PublishDesk = ({
         reviewedBy: canReview ? (user.email || user.uid) : story.reviewedBy,
         reviewNote: reviewNote ?? story.reviewNote
       };
-      await setDoc(doc(db, 'stories', story.id), nextStory);
-      await refreshDeskStories();
+      await upsertStoryInConvex(toConvexStoryInput(nextStory));
     } catch (error: any) {
       console.error(error);
       setDeskError(error.message || 'Failed to update review status.');
@@ -1803,8 +1916,7 @@ const PublishDesk = ({
 
   const deleteStory = async (storyId: string) => {
     try {
-      await deleteDoc(doc(db, 'stories', storyId));
-      await refreshDeskStories();
+      await removeStoryFromConvex({ storyId });
     } catch (error: any) {
       console.error(error);
       setDeskError(error.message || 'Failed to remove draft.');
@@ -1969,7 +2081,11 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
   orderList: Order[],
   onSelectStory: (story: Story) => void
 }) => {
-  const [profile, setProfile] = useState<{name: string, email: string, role: string, isPremium: boolean, editorStatus: string, avatarUrl?: string, bio?: string} | null>(null);
+  const convexProfile = useQuery(usersApi.me);
+  const updateProfileInConvex = useMutation(usersApi.updateProfile);
+  const requestEditorAccessInConvex = useMutation(usersApi.requestEditorAccess);
+  const activatePremiumInConvex = useMutation(usersApi.activatePremium);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editingBio, setEditingBio] = useState(false);
@@ -1981,63 +2097,22 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
   const getFileUrl = useMutation(api.media.getFileUrl);
 
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const snap = await getDoc(doc(db, 'users', user.uid));
-        if (snap.exists()) {
-          const d = snap.data();
-          setProfile({
-            name: d.name || user.displayName || 'Unknown',
-            email: d.email || user.email || '',
-            role: d.role || 'viewer',
-            isPremium: d.isPremium || false,
-            editorStatus: d.editorStatus || 'none',
-            avatarUrl: d.avatarUrl,
-            bio: d.bio || 'Architect of the new Pan-African visual language.'
-          });
-          setNewBio(d.bio || 'Architect of the new Pan-African visual language.');
-          setNewAvatarUrl(d.avatarUrl || '');
-        } else {
-          const role = isSuperAdminEmail(user.email) ? 'admin' : 'viewer';
-          const initData = {
-            name: user.displayName || user.email || 'Unknown',
-            email: user.email || '',
-            role,
-            avatarUrl: role === 'admin' ? '' : undefined,
-            bio: 'Architect of the new Pan-African visual language.',
-            isPremium: role === 'admin',
-            editorStatus: role === 'admin' ? 'approved' : 'none'
-          };
-          await setDoc(doc(db, 'users', user.uid), initData);
-          setProfile(initData);
-          setNewBio(initData.bio);
-          setNewAvatarUrl(initData.avatarUrl || '');
-        }
-      } catch (err) {
-        if (isFirestoreOfflineError(err)) {
-          setProfile({
-            name: user.displayName || user.email || 'Unknown',
-            email: user.email || '',
-            role: isSuperAdminEmail(user.email) ? 'admin' : 'viewer',
-            isPremium: isSuperAdminEmail(user.email),
-            editorStatus: isSuperAdminEmail(user.email) ? 'approved' : 'none',
-            bio: 'Profile sync is temporarily offline. Reconnect to refresh your account data.'
-          });
-          setNewBio('Profile sync is temporarily offline. Reconnect to refresh your account data.');
-          setNewAvatarUrl('');
-          return;
-        }
-        console.error(err);
-      }
-    };
-    fetchProfile();
-  }, [user]);
+    if (convexProfile) {
+      setProfile(convexProfile);
+      setNewName(convexProfile.name);
+      setNewBio(convexProfile.bio || 'Architect of the new Pan-African visual language.');
+      setNewAvatarUrl(convexProfile.avatarUrl || '');
+      return;
+    }
+
+    setProfile(null);
+  }, [convexProfile]);
 
   const handleUpdateName = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) { setEditingName(false); return; }
     try {
-      await updateDoc(doc(db, 'users', user.uid), { name: newName.trim() });
+      await updateProfileInConvex({ name: newName.trim() });
       setProfile(p => p ? {...p, name: newName.trim()} : p);
       setEditingName(false);
     } catch(err) { console.error(err); }
@@ -2046,7 +2121,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
   const handleUpdateBio = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await updateDoc(doc(db, 'users', user.uid), { bio: newBio.trim() });
+      await updateProfileInConvex({ bio: newBio.trim() });
       setProfile(p => p ? {...p, bio: newBio.trim()} : p);
       setEditingBio(false);
     } catch(err) { console.error(err); }
@@ -2054,14 +2129,14 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
 
   const handleApplyEditor = async () => {
     try {
-      await updateDoc(doc(db, 'users', user.uid), { editorStatus: 'pending' });
+      await requestEditorAccessInConvex({});
       setProfile(p => p ? {...p, editorStatus: 'pending'} : p);
     } catch(err) { console.error(err); }
   };
 
   const handleGetPremium = async () => {
     try {
-      await updateDoc(doc(db, 'users', user.uid), { isPremium: true });
+      await activatePremiumInConvex({});
       setProfile(p => p ? {...p, isPremium: true} : p);
     } catch(err) { console.error(err); }
   };
@@ -2070,7 +2145,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
     e.preventDefault();
     try {
       const avatarUrl = newAvatarUrl.trim();
-      await updateDoc(doc(db, 'users', user.uid), { avatarUrl });
+      await updateProfileInConvex({ avatarUrl });
       setProfile(p => p ? {...p, avatarUrl} : p);
       setEditingAvatar(false);
     } catch(err) {
@@ -2084,7 +2159,7 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
     setIsUploadingAvatar(true);
     try {
       const avatarUrl = await uploadFileToConvex(file, generateUploadUrl, getFileUrl);
-      await updateDoc(doc(db, 'users', user.uid), { avatarUrl });
+      await updateProfileInConvex({ avatarUrl });
       setProfile(p => p ? { ...p, avatarUrl } : p);
       setNewAvatarUrl(avatarUrl);
       setEditingAvatar(false);
@@ -2266,7 +2341,11 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
                   className="min-w-[300px] group cursor-pointer"
                 >
                   <div className="aspect-[16/9] bg-brand-gray/20 border border-brand-black/5 overflow-hidden mb-3 relative">
-                    <img src={story.image} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-105" />
+                    <StoryMedia
+                      story={story}
+                      alt={story.title}
+                      className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-105"
+                    />
                     <div className="absolute top-2 right-2 bg-white px-2 py-1 text-[8px] font-bold uppercase border border-brand-black">{story.category}</div>
                   </div>
                   <h4 className="text-xs font-bold uppercase truncate group-hover:text-brand-red transition-colors">{story.title}</h4>
@@ -2325,6 +2404,16 @@ const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList,
 };
 
 export default function App() {
+  const convexAds = useQuery(adsApi.listAll);
+  const convexCategories = useQuery(api.categories.list);
+  const convexOrders = useQuery(api.orders.listAll);
+  const convexPublishedStories = useQuery(api.stories.listPublished);
+  const convexUser = useQuery(usersApi.me);
+  const seedCoreTaxonomy = useMutation(api.categories.seedCoreTaxonomy);
+  const createSubscriberInConvex = useMutation(subscribersApi.create);
+  const createOrderInConvex = useMutation(api.orders.create);
+  const seedInitialStories = useMutation(api.stories.seedInitialStories);
+  const syncConvexUser = useMutation(usersApi.syncCurrentUser);
   const [searchQuery, setSearchQuery] = useState('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState<Page>('index');
@@ -2334,6 +2423,7 @@ export default function App() {
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<UserRole>('viewer');
+  const convexAdminTeam = useQuery(userRole === 'admin' ? usersApi.listTeam : 'skip');
   const [emailInput, setEmailInput] = useState('');
   const [newsletterStatus, setNewsletterStatus] = useState<'idle' | 'success'>('idle');
   const [readingHistory, setReadingHistory] = useState<string[]>(() => {
@@ -2343,21 +2433,85 @@ export default function App() {
   const [orderStatus, setOrderStatus] = useState<'idle' | 'success' | 'loading'>('idle');
   const [firebaseWarning, setFirebaseWarning] = useState('');
   
-  // Team & Orders state at root for dashboard overview
-  interface TeamMember {
-    id: string;
-    email: string;
-    role: string;
-    joined: string;
-    status?: string;
-  }
-  const [team, setTeam] = useState<TeamMember[]>([]);
+  const [team, setTeam] = useState<UserProfile[]>([]);
   const [orderList, setOrderList] = useState<Order[]>([]);
 
   const CORE_TAXONOMY = [
     'STREET CULTURE', 'CREATIVE TECH', 'MOTION DESIGN', 'MUSIC', 'STREET FOOD', 'FASHION',
     'LAGOS', 'CAPETOWN', 'DAKAR', 'KINSHASA', 'ZINES', 'AFROBEATS', 'VR'
   ];
+
+  useEffect(() => {
+    if (convexCategories) {
+      setCategories(convexCategories);
+    }
+  }, [convexCategories]);
+
+  useEffect(() => {
+    if (convexCategories?.length === 0) {
+      void seedCoreTaxonomy({ names: CORE_TAXONOMY });
+    }
+  }, [convexCategories, seedCoreTaxonomy]);
+
+  useEffect(() => {
+    if (convexPublishedStories) {
+      setStories(convexPublishedStories.length > 0 ? convexPublishedStories : INITIAL_STORIES);
+    }
+  }, [convexPublishedStories]);
+
+  useEffect(() => {
+    if (convexPublishedStories?.length === 0) {
+      void seedInitialStories({
+        stories: INITIAL_STORIES.map((story) =>
+          toConvexStoryInput({
+            ...story,
+            createdAt: story.createdAt ?? Date.now(),
+            updatedAt: story.updatedAt ?? story.createdAt ?? Date.now(),
+            likesCount: story.likesCount ?? 0,
+            status: story.status ?? 'published',
+          }),
+        ),
+      });
+    }
+  }, [convexPublishedStories, seedInitialStories]);
+
+  useEffect(() => {
+    if (convexOrders) {
+      setOrderList(convexOrders);
+    }
+  }, [convexOrders]);
+
+  useEffect(() => {
+    if (convexAds) {
+      setAds(convexAds);
+    }
+  }, [convexAds]);
+
+  useEffect(() => {
+    if (convexUser) {
+      if (convexUser.status === 'banned') {
+        setUserRole('viewer');
+        void signOut(auth);
+        alert("This identity has been restricted. Please contact central node.");
+        return;
+      }
+      setUserRole(convexUser.role);
+      setFirebaseWarning('');
+      return;
+    }
+
+    if (!user) {
+      setUserRole('viewer');
+    }
+  }, [convexUser, user]);
+
+  useEffect(() => {
+    if (convexAdminTeam) {
+      setTeam(convexAdminTeam);
+    } else if (userRole !== 'admin') {
+      setTeam([]);
+    }
+  }, [convexAdminTeam, userRole]);
 
   const requestPrint = async (storyId: string, storyTitle: string) => {
     if (!user) {
@@ -2366,11 +2520,10 @@ export default function App() {
     }
     setOrderStatus('loading');
     try {
-      await setDoc(doc(db, 'orders', `order-${Date.now()}`), {
-        userEmail: user.email,
+      await createOrderInConvex({
+        userEmail: user.email || 'unknown@iyuun.local',
         storyId,
         storyTitle,
-        status: 'pending',
         createdAt: Date.now()
       });
       setOrderStatus('success');
@@ -2392,136 +2545,20 @@ export default function App() {
   };
 
   useEffect(() => {
-    const fetchStories = async () => {
-      try {
-        const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
-        const querySnapshot = await getDocs(q);
-        const fetchedStories: Story[] = [];
-        querySnapshot.forEach((doc) => {
-          fetchedStories.push(doc.data() as Story);
-        });
-        const publishedStories = fetchedStories.filter(isPublishedStory);
-        if (fetchedStories.length === 0) {
-           setStories(INITIAL_STORIES);
-        } else {
-           setStories(publishedStories);
-        }
-      } catch (err) {
-        console.error("Error fetching stories:", err);
-      }
-    };
-    fetchStories();
-
-    const fetchAds = async () => {
-      try {
-        const q = query(collection(db, 'ads'), orderBy('createdAt', 'desc'));
-        const docSnap = await getDocs(q);
-        const fetchedAds: Ad[] = [];
-        docSnap.forEach(d => fetchedAds.push(d.data() as Ad));
-        setAds(fetchedAds);
-      } catch(err) {
-        console.error(err);
-      }
-    };
-    fetchAds();
-
-    const fetchCategories = async () => {
-      try {
-        const docSnap = await getDocs(collection(db, 'categories'));
-        const cats: Category[] = [];
-        docSnap.forEach(d => cats.push(d.data() as Category));
-        
-        if (cats.length === 0) {
-          // SEEDING LOGIN
-          const seeded: Category[] = [];
-          for (const name of CORE_TAXONOMY) {
-            const id = name.toLowerCase().replace(/\s+/g, '-');
-            const newCat = { id, name };
-            await setDoc(doc(db, 'categories', id), newCat);
-            seeded.push(newCat);
-          }
-          setCategories(seeded);
-        } else {
-          setCategories(cats);
-        }
-      } catch(err) { console.error(err); }
-    };
-    fetchCategories();
-
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
         try {
-          const userRef = doc(db, 'users', currentUser.uid);
-          const snap = await getDoc(userRef);
-          
-          if (!snap.exists()) {
-            let role = isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer';
-            let status = 'active';
-            let editorStatus = role === 'admin' ? 'approved' : 'none';
-            let isPremium = role === 'admin';
-
-            try {
-              // Check if user was provisioned by email
-              const q = query(collection(db, 'users'), where('email', '==', currentUser.email), limit(1));
-              const inviteSnap = await getDocs(q);
-
-              if (!inviteSnap.empty) {
-                const inviteData = inviteSnap.docs[0].data();
-                role = inviteData.role || role;
-                status = inviteData.status || status;
-                editorStatus = inviteData.editorStatus || (role === 'editor' || role === 'admin' ? 'approved' : editorStatus);
-                isPremium = Boolean(inviteData.isPremium) || role === 'admin';
-
-                if (inviteSnap.docs[0].id !== currentUser.uid) {
-                  await deleteDoc(doc(db, 'users', inviteSnap.docs[0].id));
-                }
-              }
-            } catch (inviteError) {
-              console.warn('Invite lookup skipped:', inviteError);
-            }
-
-            // New user registration
-            await setDoc(userRef, {
-              email: currentUser.email,
-              name: currentUser.displayName || currentUser.email,
-              displayName: currentUser.displayName,
-              role: role,
-              joined: new Date().toLocaleDateString('en-CA').replace(/-/g, '.'),
-              status: status,
-              editorStatus,
-              isPremium
-            });
-            setUserRole(role as any);
-          } else {
-            const data = snap.data();
-            // Check if banned
-            if (data.status === 'banned') {
-              setUserRole('viewer'); // Or a higher state for banned to block all UI
-              signOut(auth);
-              alert("This identity has been restricted. Please contact central node.");
-              return;
-            }
-
-            // Enforce super admin for the platform owner account.
-            if (isSuperAdminEmail(currentUser.email) && data.role !== 'admin') {
-              await updateDoc(userRef, {
-                role: 'admin',
-                editorStatus: 'approved',
-                isPremium: true
-              });
-              setUserRole('admin');
-            } else {
-              setUserRole(data.role || 'viewer');
-            }
-          }
+          await syncConvexUser({
+            email: currentUser.email || '',
+            name: currentUser.displayName || currentUser.email || 'Unknown',
+            avatarUrl: currentUser.photoURL || undefined,
+          });
           setFirebaseWarning('');
         } catch (error) {
           console.error('Auth bootstrap error:', error);
           setUserRole(isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer');
-          if (isFirestoreOfflineError(error)) {
-            setFirebaseWarning('Firebase is connected to Auth, but Firestore is unavailable right now. Reader pages still work while we reconnect.');
-          }
+          setFirebaseWarning('Authentication succeeded, but Convex profile sync is not ready yet. Reader pages still work while we reconnect.');
         }
       } else {
         setUserRole('viewer');
@@ -2529,33 +2566,7 @@ export default function App() {
       }
     });
     return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (userRole === 'admin') {
-      const fetchDashboardData = async () => {
-        try {
-          const uQ = query(collection(db, 'users'), orderBy('joined', 'desc'));
-          const uSnap = await getDocs(uQ);
-          const members: TeamMember[] = [];
-          uSnap.forEach(d => members.push({ id: d.id, ...d.data() } as TeamMember));
-          setTeam(members);
-
-          const oQ = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
-          const oSnap = await getDocs(oQ);
-          const orders: Order[] = [];
-          oSnap.forEach(d => {
-            const data = d.data();
-             orders.push({ id: d.id, ...data } as Order);
-          });
-          setOrderList(orders);
-        } catch(e) { console.error("Dashboard Sync Error:", e); }
-      };
-      fetchDashboardData();
-    } else {
-      setTeam([]);
-    }
-  }, [userRole, stories]);
+  }, [syncConvexUser]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -2579,9 +2590,9 @@ export default function App() {
     e.preventDefault();
     if (emailInput) {
       try {
-        await setDoc(doc(db, 'subscribers', `sub-${Date.now()}`), {
+        await createSubscriberInConvex({
           email: emailInput,
-          createdAt: Date.now()
+          createdAt: Date.now(),
         });
         setNewsletterStatus('success');
         setEmailInput('');
@@ -2591,6 +2602,9 @@ export default function App() {
   };
 
   const ArticleDetail = ({ story }: { story: Story }) => {
+    const incrementStoryLikes = useMutation(api.stories.incrementLikes);
+    const storyComments = useQuery(api.comments.listByStory, { storyId: story.id });
+    const createComment = useMutation(api.comments.create);
     const [likes, setLikes] = useState(story.likesCount || 0);
     const [hasLiked, setHasLiked] = useState(() => localStorage.getItem(`iyuun_liked_${story.id}`) === 'true');
     const [comments, setComments] = useState<Comment[]>([]);
@@ -2599,17 +2613,10 @@ export default function App() {
     const [loadingRecs, setLoadingRecs] = useState(false);
 
     useEffect(() => {
-      const fetchComments = async () => {
-        try {
-          const q = query(collection(db, 'comments'), where('storyId', '==', story.id), orderBy('createdAt', 'desc'));
-          const docSnap = await getDocs(q);
-          const loaded: Comment[] = [];
-          docSnap.forEach(d => loaded.push({ id: d.id, ...d.data() } as Comment));
-          setComments(loaded);
-        } catch(e) { console.error("Comments error", e); }
-      };
-      fetchComments();
-    }, [story.id]);
+      if (storyComments) {
+        setComments(storyComments);
+      }
+    }, [storyComments]);
 
     useEffect(() => {
       const fetchRecs = async () => {
@@ -2647,7 +2654,7 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
       setLikes(l => l + 1);
       localStorage.setItem(`iyuun_liked_${story.id}`, 'true');
       try {
-        await updateDoc(doc(db, 'stories', story.id), { likesCount: increment(1) });
+        await incrementStoryLikes({ storyId: story.id });
       } catch (e) { console.error(e); }
     };
 
@@ -2670,8 +2677,7 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
       };
       setNewComment('');
       try {
-        const dRef = await addDoc(collection(db, 'comments'), cData);
-        setComments([{id: dRef.id, ...cData}, ...comments]);
+        await createComment(cData);
       } catch(e) { console.error(e); }
     };
 
@@ -2725,11 +2731,11 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
             </div>
 
             <div className="border border-brand-black overflow-hidden relative group">
-               {story.type === 'video' ? (
-                 <video src={story.video} className="w-full grayscale hover:grayscale-0 transition-all duration-700" autoPlay loop muted playsInline />
-               ) : (
-                 <img src={story.image} alt={story.title} className="w-full grayscale hover:grayscale-0 transition-all duration-700 object-cover" referrerPolicy="no-referrer" />
-               )}
+               <StoryMedia
+                 story={story}
+                 alt={story.title}
+                 className="w-full grayscale hover:grayscale-0 transition-all duration-700 object-cover"
+               />
             </div>
 
             <div className="prose prose-xl max-w-none mb-16">
@@ -2752,7 +2758,11 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
                    {recs.map(r => (
                      <div key={r.id} onClick={() => clickStory(r)} className="cursor-pointer group">
                         <div className="aspect-video border border-brand-black bg-brand-gray/30 mb-3 overflow-hidden">
-                          <img src={r.image || 'https://picsum.photos/400'} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" alt=""/>
+                          <StoryMedia
+                            story={r}
+                            alt={r.title}
+                            className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all"
+                          />
                         </div>
                         <p className="text-[10px] text-brand-red uppercase tracking-widest font-bold mb-1">{r.category}</p>
                         <h4 className="font-bold uppercase tracking-tight group-hover:text-brand-red transition-colors">{r.title}</h4>
@@ -2988,6 +2998,14 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
                 }
               </AnimatePresence>
             </div>
+            {stories.filter(s => !searchQuery || s.title.toLowerCase().includes(searchQuery.toLowerCase()) || s.category.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && (
+              <div className="mt-12">
+                <EmptyStoryState
+                  title="No Featured Stories Match"
+                  detail="The current search filter does not match any live stories. Clear the query or try a nearby tag to continue exploring."
+                />
+              </div>
+            )}
           </section>
           
           <Newsletter />
