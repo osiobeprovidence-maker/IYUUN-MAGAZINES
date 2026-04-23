@@ -5,9 +5,9 @@ import App from './App.tsx';
 import { useFirebaseConvexAuth } from './convexAuth.ts';
 import './index.css';
 
-const convexUrl = import.meta.env.VITE_CONVEX_URL;
+const rawConvexUrl = import.meta.env.VITE_CONVEX_URL;
 
-if (!convexUrl) {
+if (!rawConvexUrl) {
   throw new Error(
     [
       'Missing VITE_CONVEX_URL.',
@@ -17,6 +17,7 @@ if (!convexUrl) {
   );
 }
 
+const convexUrl = rawConvexUrl.replace(/\/+$/, '');
 const convex = new ConvexReactClient(convexUrl);
 
 createRoot(document.getElementById('root')!).render(
