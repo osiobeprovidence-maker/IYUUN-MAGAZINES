@@ -1,4 +1,4 @@
-import { StrictMode } from 'react';
+import React, { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ConvexProviderWithAuth, ConvexReactClient } from 'convex/react';
 import App from './App.tsx';
@@ -8,6 +8,15 @@ import './index.css';
 
 const rawConvexUrl = import.meta.env.VITE_CONVEX_URL;
 
+type RuntimeErrorBoundaryProps = {
+  children: React.ReactNode;
+  convexUrl: string;
+};
+
+type RuntimeErrorBoundaryState = {
+  error: Error | null;
+};
+
 const convexConfigError = !rawConvexUrl
   ? [
       'Missing VITE_CONVEX_URL.',
@@ -16,6 +25,37 @@ const convexConfigError = !rawConvexUrl
   : null;
 
 const startupErrors = [convexConfigError, firebaseConfigError].filter(Boolean) as string[];
+
+class RuntimeErrorBoundary extends React.Component<RuntimeErrorBoundaryProps, RuntimeErrorBoundaryState> {
+  state: RuntimeErrorBoundaryState = {
+    error: null,
+  };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  override componentDidCatch(error: Error) {
+    console.error('Runtime bootstrap error:', error);
+  }
+
+  override render() {
+    if (!this.state.error) {
+      return this.props.children;
+    }
+
+    const isMissingFunctionError = this.state.error.message.includes('Could not find public function');
+    const message = isMissingFunctionError
+      ? [
+          'The frontend is connected to a Convex deployment that does not have the required app functions.',
+          `Current VITE_CONVEX_URL: ${this.props.convexUrl}`,
+          'Redeploy the backend to that deployment or update the frontend environment to the intended Convex URL and redeploy.',
+        ].join(' ')
+      : this.state.error.message;
+
+    return <SetupErrorScreen errors={[message]} />;
+  }
+}
 
 function SetupErrorScreen({ errors }: { errors: string[] }) {
   return (
@@ -83,9 +123,11 @@ if (startupErrors.length > 0) {
 
   root.render(
     <StrictMode>
-      <ConvexProviderWithAuth client={convex} useAuth={useFirebaseConvexAuth}>
-        <App />
-      </ConvexProviderWithAuth>
+      <RuntimeErrorBoundary convexUrl={convexUrl}>
+        <ConvexProviderWithAuth client={convex} useAuth={useFirebaseConvexAuth}>
+          <App />
+        </ConvexProviderWithAuth>
+      </RuntimeErrorBoundary>
     </StrictMode>,
   );
 }
