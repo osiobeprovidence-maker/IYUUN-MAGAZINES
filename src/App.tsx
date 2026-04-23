@@ -666,7 +666,7 @@ const AdminDashboard = ({
   team: any[], setTeam: React.Dispatch<React.SetStateAction<any[]>>,
   orderList: Order[], setOrderList: React.Dispatch<React.SetStateAction<Order[]>>
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'stories' | 'ads' | 'team' | 'categories' | 'orders'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'stories' | 'ads' | 'team' | 'categories' | 'orders' | 'media'>('overview');
   const [isNavOpen, setIsNavOpen] = useState(false);
 
   // Story Form State
