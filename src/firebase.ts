@@ -3,10 +3,14 @@ import {
   type Auth,
   getAuth,
   GoogleAuthProvider,
+  createUserWithEmailAndPassword as firebaseCreateUserWithEmailAndPassword,
+  sendPasswordResetEmail as firebaseSendPasswordResetEmail,
+  signInWithEmailAndPassword as firebaseSignInWithEmailAndPassword,
   signInWithPopup as firebaseSignInWithPopup,
   signOut as firebaseSignOut,
   onAuthStateChanged as firebaseOnAuthStateChanged,
   onIdTokenChanged as firebaseOnIdTokenChanged,
+  updateProfile as firebaseUpdateProfile,
   connectAuthEmulator,
   type User,
 } from 'firebase/auth';
@@ -101,6 +105,55 @@ export const signInWithPopup = (authInstance: Auth | null | undefined, provider:
   }
 
   return firebaseSignInWithPopup(authInstance, provider);
+};
+
+export const signInWithEmailAndPassword = (
+  authInstance: Auth | null | undefined,
+  email: string,
+  password: string,
+) => {
+  if (!authInstance) {
+    return Promise.reject(notConfiguredError());
+  }
+
+  return firebaseSignInWithEmailAndPassword(authInstance, email, password);
+};
+
+export const createUserWithEmailAndPassword = (
+  authInstance: Auth | null | undefined,
+  email: string,
+  password: string,
+) => {
+  if (!authInstance) {
+    return Promise.reject(notConfiguredError());
+  }
+
+  return firebaseCreateUserWithEmailAndPassword(authInstance, email, password);
+};
+
+export const sendPasswordResetEmail = (
+  authInstance: Auth | null | undefined,
+  email: string,
+) => {
+  if (!authInstance) {
+    return Promise.reject(notConfiguredError());
+  }
+
+  return firebaseSendPasswordResetEmail(authInstance, email);
+};
+
+export const updateUserProfile = (
+  user: User | null | undefined,
+  profile: {
+    displayName?: string | null;
+    photoURL?: string | null;
+  },
+) => {
+  if (!user) {
+    return Promise.reject(notConfiguredError());
+  }
+
+  return firebaseUpdateProfile(user, profile);
 };
 
 export const signOut = (authInstance: Auth | null | undefined) => {

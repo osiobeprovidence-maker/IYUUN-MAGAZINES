@@ -1,10 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, ArrowRight, Menu, X, Play, Shield, Upload, Save, Trash2, Eye, Users, BarChart2, DollarSign, Megaphone, Activity, Heart, MessageCircle, Share2 } from 'lucide-react';
+import { Search, ArrowRight, Menu, X, Play, Shield, Upload, Save, Trash2, Eye, Users, BarChart2, DollarSign, Megaphone, Activity, Heart, MessageCircle, Share2, Mail, Lock, UserPlus } from 'lucide-react';
 import { useMutation, useQuery } from 'convex/react';
 import { api } from '../convex/_generated/api';
 import type { Id } from '../convex/_generated/dataModel';
-import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, type FirebaseUser } from './firebase';
+import {
+  auth,
+  googleProvider,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  updateUserProfile,
+  signOut,
+  onAuthStateChanged,
+  type FirebaseUser,
+} from './firebase';
 import { GoogleGenAI, Type } from '@google/genai';
 
 const usersApi = (api as any).users;
@@ -19,6 +30,41 @@ const isFirestoreOfflineError = (error: unknown) =>
   error !== null &&
   'code' in error &&
   (error as { code?: string }).code === 'unavailable';
+const firebaseProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || 'this deployment';
+
+const getFirebaseAuthMessage = (error: unknown) => {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    switch ((error as { code?: string }).code) {
+      case 'auth/email-already-in-use':
+        return 'That email already has an account. Sign in instead.';
+      case 'auth/invalid-credential':
+      case 'auth/invalid-login-credentials':
+        return 'Incorrect email or password.';
+      case 'auth/invalid-email':
+        return 'Enter a valid email address.';
+      case 'auth/missing-password':
+        return 'Enter your password.';
+      case 'auth/operation-not-allowed':
+        return `Email/Password is still disabled for Firebase project ${firebaseProjectId}. Enable it in Firebase Authentication, save, then refresh this page.`;
+      case 'auth/too-many-requests':
+        return 'Too many attempts. Please wait a moment and try again.';
+      case 'auth/unauthorized-domain':
+        return 'This domain is not authorized in Firebase Authentication yet.';
+      case 'auth/user-disabled':
+        return 'This account has been disabled.';
+      case 'auth/weak-password':
+        return 'Use a password with at least 6 characters.';
+      default:
+        break;
+    }
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return 'Authentication failed. Please try again.';
+};
 const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
 const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
@@ -71,7 +117,7 @@ async function uploadFileToConvex(
 }
 
 // --- TYPES ---
-type Page = 'index' | 'archive' | 'manifesto' | 'admin' | 'publish' | 'article' | 'search' | 'business' | 'about' | 'contact' | 'profile' | 'orders';
+type Page = 'index' | 'archive' | 'manifesto' | 'admin' | 'publish' | 'article' | 'search' | 'business' | 'about' | 'contact' | 'profile' | 'orders' | 'login';
 type UserRole = 'admin' | 'editor' | 'viewer';
 type StoryStatus = 'draft' | 'pending_review' | 'published' | 'changes_requested';
 
@@ -387,12 +433,11 @@ const NavBar = ({ isMenuOpen, setIsMenuOpen, currentPage, setCurrentPage }: { is
   );
 };
 
-const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleGoogleLogin, handleLogout, userRole, orderStatus, requestPrint }: { 
+const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleLogout, userRole, orderStatus, requestPrint }: { 
   isOpen: boolean, 
   onClose: () => void, 
   setCurrentPage: (p: Page) => void,
   user: FirebaseUser | null,
-  handleGoogleLogin: () => void,
   handleLogout: () => void,
   userRole: UserRole,
   orderStatus: 'idle' | 'success' | 'loading',
@@ -425,10 +470,10 @@ const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleGoogleLogin,
                   </div>
                 ) : (
                   <button 
-                    onClick={handleGoogleLogin}
+                    onClick={() => navigate('login')}
                     className="text-[10px] font-bold uppercase tracking-widest hover:text-brand-red flex items-center gap-2"
                   >
-                    Login with Google
+                    Open Login
                   </button>
                 )}
               </div>
@@ -466,6 +511,7 @@ const MenuOverlay = ({ isOpen, onClose, setCurrentPage, user, handleGoogleLogin,
                   { name: 'Manifesto', id: 'manifesto' as Page },
                   { name: 'Partnerships', id: 'business' as Page },
                   { name: 'About', id: 'about' as Page },
+                  ...(user ? [{ name: 'Profile', id: 'profile' as Page }] : [{ name: 'Login', id: 'login' as Page }]),
                   ...(canAccessPublishDesk(userRole) ? [{ name: 'Publish', id: 'publish' as Page }] : []),
                   ...(canAccessAdminConsole(userRole) ? [{ name: 'Admin', id: 'admin' as Page }] : [])
                 ].map((item, idx) => (
@@ -2093,6 +2139,270 @@ const PublishDesk = ({
   );
 };
 
+const LoginPage = ({ setCurrentPage }: {
+  setCurrentPage: (p: Page) => void,
+}) => {
+  const [mode, setMode] = useState<'signIn' | 'createAccount'>('signIn');
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
+  const [isEmailSubmitting, setIsEmailSubmitting] = useState(false);
+  const [isGoogleSubmitting, setIsGoogleSubmitting] = useState(false);
+  const [isResetSubmitting, setIsResetSubmitting] = useState(false);
+
+  const switchMode = (nextMode: 'signIn' | 'createAccount') => {
+    setMode(nextMode);
+    setAuthError('');
+    setResetMessage('');
+    setPassword('');
+  };
+
+  const handleGoogleAuth = async () => {
+    setAuthError('');
+    setResetMessage('');
+    setIsGoogleSubmitting(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      setAuthError(getFirebaseAuthMessage(error));
+    } finally {
+      setIsGoogleSubmitting(false);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const normalizedEmail = email.trim().toLowerCase();
+    const trimmedName = fullName.trim();
+
+    if (!normalizedEmail) {
+      setAuthError('Enter your email address.');
+      return;
+    }
+
+    if (!password) {
+      setAuthError('Enter your password.');
+      return;
+    }
+
+    if (mode === 'createAccount' && !trimmedName) {
+      setAuthError('Enter the name you want to use in your profile.');
+      return;
+    }
+
+    setAuthError('');
+    setResetMessage('');
+    setIsEmailSubmitting(true);
+
+    try {
+      if (mode === 'createAccount') {
+        const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+        await updateUserProfile(credential.user, {
+          displayName: trimmedName,
+        });
+      } else {
+        await signInWithEmailAndPassword(auth, normalizedEmail, password);
+      }
+
+      setPassword('');
+    } catch (error) {
+      setAuthError(getFirebaseAuthMessage(error));
+    } finally {
+      setIsEmailSubmitting(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setResetMessage('');
+      setAuthError('Enter your email first, then use forgot password.');
+      return;
+    }
+
+    setAuthError('');
+    setResetMessage('');
+    setIsResetSubmitting(true);
+
+    try {
+      await sendPasswordResetEmail(auth, normalizedEmail);
+      setResetMessage('Password reset email sent. Check your inbox and spam folder.');
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? (error as { code?: string }).code
+          : undefined;
+
+      if (code === 'auth/user-not-found') {
+        setResetMessage('If an account exists for that email, a reset link is on the way.');
+      } else {
+        setAuthError(getFirebaseAuthMessage(error));
+      }
+    } finally {
+      setIsResetSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-[#F8F8F8] min-h-screen px-4 md:px-8 py-20 font-sans">
+      <div className="max-w-6xl mx-auto">
+        <button
+          onClick={() => setCurrentPage('index')}
+          className="text-[10px] uppercase font-bold tracking-widest flex items-center gap-2 mb-12 hover:text-brand-red transition-colors"
+        >
+          <ArrowRight className="rotate-180" size={14} /> Global Feed
+        </button>
+
+        <div className="max-w-3xl">
+          <section className="border border-brand-black bg-white shadow-[8px_8px_0_rgba(0,0,0,1)] p-8 md:p-10">
+            <p className="text-[10px] uppercase tracking-[0.4em] font-bold text-brand-red mb-4">Access Node</p>
+            <h1 className="font-display text-4xl md:text-6xl uppercase tracking-tight font-bold">
+              {mode === 'signIn' ? 'Login' : 'Create Account'}
+            </h1>
+            <p className="text-sm md:text-base opacity-70 leading-relaxed mt-4 max-w-xl">
+              Choose how you want to enter the archive. Email and password now live alongside the existing Google flow.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3 mt-8">
+              <button
+                type="button"
+                onClick={() => switchMode('signIn')}
+                className={`border px-4 py-3 text-[10px] uppercase tracking-[0.3em] font-bold transition-colors ${
+                  mode === 'signIn'
+                    ? 'border-brand-black bg-brand-black text-white'
+                    : 'border-brand-black text-brand-black hover:bg-brand-gray'
+                }`}
+              >
+                Login
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode('createAccount')}
+                className={`border px-4 py-3 text-[10px] uppercase tracking-[0.3em] font-bold transition-colors ${
+                  mode === 'createAccount'
+                    ? 'border-brand-red bg-brand-red text-white'
+                    : 'border-brand-black text-brand-black hover:bg-brand-gray'
+                }`}
+              >
+                Sign Up
+              </button>
+            </div>
+
+            {authError && (
+              <div className="mt-6 border border-brand-red bg-brand-red/10 text-brand-red px-4 py-4 text-xs md:text-sm font-bold leading-relaxed">
+                {authError}
+              </div>
+            )}
+
+            {resetMessage && (
+              <div className="mt-6 border border-green-700 bg-green-50 text-green-800 px-4 py-4 text-xs md:text-sm font-bold leading-relaxed">
+                {resetMessage}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleGoogleAuth}
+              disabled={isGoogleSubmitting || isEmailSubmitting || isResetSubmitting}
+              className="mt-8 w-full border border-brand-black px-5 py-4 text-[10px] uppercase tracking-[0.35em] font-bold hover:bg-brand-black hover:text-white transition-colors disabled:opacity-50"
+            >
+              {isGoogleSubmitting ? 'Connecting Google...' : 'Continue With Google'}
+            </button>
+
+            <div className="flex items-center gap-4 my-8">
+              <div className="h-px flex-1 bg-brand-black/15" />
+              <span className="text-[10px] uppercase tracking-[0.35em] font-bold text-gray-400">Or Use Email</span>
+              <div className="h-px flex-1 bg-brand-black/15" />
+            </div>
+
+            <form onSubmit={handleEmailAuth} className="space-y-5">
+              {mode === 'createAccount' && (
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-[0.3em] font-bold text-gray-500 flex items-center gap-2 mb-2">
+                    <UserPlus size={14} /> Display Name
+                  </span>
+                  <input
+                    type="text"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Your name in the archive"
+                    autoComplete="name"
+                    className="w-full border border-brand-black bg-[#F8F8F8] px-4 py-4 outline-none text-sm focus:border-brand-red transition-colors"
+                  />
+                </label>
+              )}
+
+              <label className="block">
+                <span className="text-[10px] uppercase tracking-[0.3em] font-bold text-gray-500 flex items-center gap-2 mb-2">
+                  <Mail size={14} /> Email
+                </span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  className="w-full border border-brand-black bg-[#F8F8F8] px-4 py-4 outline-none text-sm focus:border-brand-red transition-colors"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-[10px] uppercase tracking-[0.3em] font-bold text-gray-500 flex items-center gap-2 mb-2">
+                  <Lock size={14} /> Password
+                </span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={mode === 'signIn' ? 'Enter your password' : 'Create a strong password'}
+                  autoComplete={mode === 'signIn' ? 'current-password' : 'new-password'}
+                  className="w-full border border-brand-black bg-[#F8F8F8] px-4 py-4 outline-none text-sm focus:border-brand-red transition-colors"
+                />
+              </label>
+
+              {mode === 'signIn' && (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={isEmailSubmitting || isGoogleSubmitting || isResetSubmitting}
+                    className="text-[10px] uppercase tracking-[0.25em] font-bold text-brand-red hover:text-brand-black transition-colors disabled:opacity-50"
+                  >
+                    {isResetSubmitting ? 'Sending Reset...' : 'Forgot Password?'}
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={isEmailSubmitting || isGoogleSubmitting || isResetSubmitting}
+                className="w-full bg-brand-black text-white px-6 py-4 text-[10px] uppercase tracking-[0.35em] font-bold hover:bg-brand-red transition-colors disabled:opacity-50"
+              >
+                {isEmailSubmitting
+                  ? (mode === 'signIn' ? 'Logging In...' : 'Creating Account...')
+                  : (mode === 'signIn' ? 'Login With Email' : 'Create Account')}
+              </button>
+            </form>
+
+            <div className="mt-8 text-xs md:text-sm opacity-70">
+              {mode === 'signIn' ? 'Need an account?' : 'Already have an account?'}{' '}
+              <button
+                type="button"
+                onClick={() => switchMode(mode === 'signIn' ? 'createAccount' : 'signIn')}
+                className="font-bold uppercase tracking-[0.25em] text-brand-red hover:text-brand-black transition-colors"
+              >
+                {mode === 'signIn' ? 'Sign Up' : 'Login'}
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ProfilePage = ({ user, setCurrentPage, stories, readingHistory, orderList, onSelectStory }: { 
   user: FirebaseUser, 
   setCurrentPage: (p: Page) => void,
@@ -2547,7 +2857,8 @@ export default function App() {
 
   const requestPrint = async (storyId: string, storyTitle: string) => {
     if (!user) {
-      handleGoogleLogin();
+      setIsMenuOpen(false);
+      setCurrentPage('login');
       return;
     }
     setOrderStatus('loading');
@@ -2669,15 +2980,6 @@ export default function App() {
       cancelled = true;
     };
   }, [user, convexUser, syncConvexUser]);
-
-  const handleGoogleLogin = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-      setIsMenuOpen(false);
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   const handleLogout = async () => {
     try {
@@ -3023,6 +3325,19 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
             setStories={setStories}
           />
         );
+      case 'login':
+        return user ? (
+          <ProfilePage
+            user={user}
+            setCurrentPage={setCurrentPage}
+            stories={stories}
+            readingHistory={readingHistory}
+            orderList={orderList}
+            onSelectStory={clickStory}
+          />
+        ) : (
+          <LoginPage setCurrentPage={setCurrentPage} />
+        );
       case 'profile': return user ? (
         <ProfilePage
           user={user}
@@ -3035,7 +3350,7 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
       ) : (
         <div className="min-h-screen pt-32 px-8 flex flex-col items-center justify-center font-mono text-center">
            <h2 className="text-2xl font-bold uppercase mb-4">Authentication Required</h2>
-           <button onClick={handleGoogleLogin} className="border-2 border-brand-red text-brand-red px-6 py-2 uppercase tracking-widest text-xs font-bold hover:bg-brand-red hover:text-white transition-colors">Login with Google</button>
+           <button onClick={() => setCurrentPage('login')} className="border-2 border-brand-red text-brand-red px-6 py-2 uppercase tracking-widest text-xs font-bold hover:bg-brand-red hover:text-white transition-colors">Open Login</button>
         </div>
       );
       case 'article': return selectedStory ? <ArticleDetail story={selectedStory} /> : null;
@@ -3132,7 +3447,6 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
         onClose={() => setIsMenuOpen(false)} 
         setCurrentPage={setCurrentPage} 
         user={user}
-        handleGoogleLogin={handleGoogleLogin}
         handleLogout={handleLogout}
         userRole={userRole} 
         orderStatus={orderStatus}
