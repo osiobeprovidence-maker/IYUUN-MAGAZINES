@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, ArrowRight, Menu, X, Play, Shield, Upload, Save, Trash2, Eye, Users, BarChart2, DollarSign, Megaphone, Activity, Heart, MessageCircle, Share2 } from 'lucide-react';
 import { useMutation, useQuery } from 'convex/react';
@@ -2462,6 +2462,8 @@ export default function App() {
   });
   const [orderStatus, setOrderStatus] = useState<'idle' | 'success' | 'loading'>('idle');
   const [firebaseWarning, setFirebaseWarning] = useState('');
+  const syncRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncingUserIdRef = useRef<string | null>(null);
   
   const [team, setTeam] = useState<UserProfile[]>([]);
   const [orderList, setOrderList] = useState<Order[]>([]);
@@ -2575,28 +2577,98 @@ export default function App() {
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser) {
-        try {
-          await syncConvexUser({
-            email: currentUser.email || '',
-            name: currentUser.displayName || currentUser.email || 'Unknown',
-            avatarUrl: currentUser.photoURL || undefined,
-          });
-          setFirebaseWarning('');
-        } catch (error) {
-          console.error('Auth bootstrap error:', error);
-          setUserRole(isSuperAdminEmail(currentUser.email) ? 'admin' : 'viewer');
-          setFirebaseWarning('Authentication succeeded, but Convex profile sync is not ready yet. Reader pages still work while we reconnect.');
-        }
-      } else {
+      if (!currentUser) {
+        syncingUserIdRef.current = null;
         setUserRole('viewer');
         setFirebaseWarning('');
+        if (syncRetryTimeoutRef.current) {
+          clearTimeout(syncRetryTimeoutRef.current);
+          syncRetryTimeoutRef.current = null;
+        }
       }
     });
-    return () => unsubscribe();
-  }, [syncConvexUser]);
+    return () => {
+      unsubscribe();
+      if (syncRetryTimeoutRef.current) {
+        clearTimeout(syncRetryTimeoutRef.current);
+        syncRetryTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      syncingUserIdRef.current = null;
+      return;
+    }
+
+    if (convexUser === undefined) {
+      return;
+    }
+
+    if (convexUser) {
+      syncingUserIdRef.current = user.uid;
+      setUserRole(convexUser.role);
+      setFirebaseWarning('');
+      return;
+    }
+
+    if (syncingUserIdRef.current === user.uid) {
+      return;
+    }
+
+    syncingUserIdRef.current = user.uid;
+
+    let cancelled = false;
+
+    const attemptSync = async (attempt = 0) => {
+      try {
+        await syncConvexUser({
+          email: user.email || '',
+          name: user.displayName || user.email || 'Unknown',
+          avatarUrl: user.photoURL || undefined,
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        setUserRole(isSuperAdminEmail(user.email) ? 'admin' : 'viewer');
+        setFirebaseWarning('');
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        const shouldRetry =
+          attempt < 4 &&
+          /Authentication required|User profile not found|network|fetch|timeout/i.test(message);
+
+        if (shouldRetry) {
+          const delay = 250 * 2 ** attempt;
+          syncRetryTimeoutRef.current = setTimeout(() => {
+            syncRetryTimeoutRef.current = null;
+            void attemptSync(attempt + 1);
+          }, delay);
+          return;
+        }
+
+        console.error('Auth bootstrap error:', error);
+        syncingUserIdRef.current = null;
+        setUserRole(isSuperAdminEmail(user.email) ? 'admin' : 'viewer');
+        setFirebaseWarning('');
+      }
+    };
+
+    void attemptSync();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, convexUser, syncConvexUser]);
 
   const handleGoogleLogin = async () => {
     try {
