@@ -20,7 +20,9 @@ export function useFirebaseConvexAuth() {
       if (!user) {
         return null;
       }
-      return user.getIdToken(forceRefreshToken);
+      // Force refresh to ensure we get a fresh ID token with latest claims
+      // This is critical for new users right after sign-in
+      return user.getIdToken(true);
     },
     [],
   );

@@ -1,6 +1,7 @@
 import type { AuthConfig } from "convex/server";
 
-const projectId = "gen-lang-client-0422761172";
+// Use the Firebase project ID from environment variable if available, fallback to hardcoded value
+const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || "gen-lang-client-0422761172";
 
 export default {
   providers: [

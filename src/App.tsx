@@ -2604,18 +2604,15 @@ export default function App() {
       return;
     }
 
-    if (convexUser === undefined) {
-      return;
-    }
-
-    if (convexUser) {
-      syncingUserIdRef.current = user.uid;
-      setUserRole(convexUser.role);
-      setFirebaseWarning('');
-      return;
-    }
-
-    if (syncingUserIdRef.current === user.uid) {
+    // Don't wait for convexUser query to load - always attempt sync for authenticated users
+    // The convexUser query will be undefined initially, but we should still try to sync
+    
+    if (syncingUserIdRef.current === user.uid && convexUser !== null) {
+      // Already synced and have a result, skip
+      if (convexUser) {
+        setUserRole(convexUser.role);
+        setFirebaseWarning('');
+      }
       return;
     }
 
@@ -2625,7 +2622,7 @@ export default function App() {
 
     const attemptSync = async (attempt = 0) => {
       try {
-        await syncConvexUser({
+        const result = await syncConvexUser({
           email: user.email || '',
           name: user.displayName || user.email || 'Unknown',
           avatarUrl: user.photoURL || undefined,
@@ -2635,8 +2632,12 @@ export default function App() {
           return;
         }
 
-        setUserRole(isSuperAdminEmail(user.email) ? 'admin' : 'viewer');
-        setFirebaseWarning('');
+        if (result) {
+          setUserRole(result.role);
+          setFirebaseWarning('');
+        } else {
+          setUserRole(isSuperAdminEmail(user.email) ? 'admin' : 'viewer');
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -2668,7 +2669,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [user, convexUser, syncConvexUser]);
+  }, [user, syncConvexUser]);
 
   const handleGoogleLogin = async () => {
     try {
