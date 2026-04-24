@@ -96,7 +96,9 @@ export const syncCurrentUser = mutation({
       throw new Error("Authentication required.");
     }
 
-    const normalizedEmail = normalizeEmail(args.email || identity.email || "");
+    // Use the email from the authenticated identity (Firebase ID token) as source of truth
+    // Fall back to args.email only if identity.email is somehow missing
+    const normalizedEmail = normalizeEmail(identity.email || args.email);
     if (!normalizedEmail) {
       throw new Error("User email is required.");
     }
@@ -119,7 +121,7 @@ export const syncCurrentUser = mutation({
       const nextRole = isSuperAdminEmail(normalizedEmail) ? "admin" : existingByToken.role;
       await ctx.db.patch(existingByToken._id, {
         email: normalizedEmail,
-        name: args.name,
+        name: args.name || identity.email?.split('@')[0] || existingByToken.name,
         avatarUrl: args.avatarUrl,
         role: nextRole,
         editorStatus: nextRole === "admin" ? "approved" : existingByToken.editorStatus,
@@ -135,7 +137,7 @@ export const syncCurrentUser = mutation({
       await ctx.db.patch(existingInvite._id, {
         tokenIdentifier: identity.tokenIdentifier,
         email: normalizedEmail,
-        name: args.name,
+        name: args.name || identity.email?.split('@')[0] || existingInvite.name,
         avatarUrl: args.avatarUrl,
         lastSeenAt: now,
       });
@@ -146,7 +148,7 @@ export const syncCurrentUser = mutation({
     const id = await ctx.db.insert("users", {
       tokenIdentifier: identity.tokenIdentifier,
       email: normalizedEmail,
-      name: args.name,
+      name: args.name || identity.email?.split('@')[0] || normalizedEmail,
       role: baseRole,
       joined: new Date().toLocaleDateString("en-CA").replace(/-/g, "."),
       status: "active",
