@@ -22,6 +22,26 @@ const isFirestoreOfflineError = (error: unknown) =>
 const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
 const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
+const safeStorage = {
+  getItem(key: string) {
+    try {
+      return typeof window === 'undefined' ? null : window.localStorage.getItem(key);
+    } catch (error) {
+      console.warn(`Unable to read localStorage key "${key}"`, error);
+      return null;
+    }
+  },
+  setItem(key: string, value: string) {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(key, value);
+      }
+    } catch (error) {
+      console.warn(`Unable to write localStorage key "${key}"`, error);
+    }
+  }
+};
+
 async function uploadFileToConvex(
   file: File,
   generateUploadUrl: () => Promise<string>,
@@ -718,7 +738,7 @@ const AdminDashboard = ({
 
   const isSuperAdmin = isSuperAdminEmail(user?.email);
   const convexTeam = useQuery(
-    activeTab === 'team' && isSuperAdmin ? usersApi.listTeam : 'skip',
+    activeTab === 'team' && isSuperAdmin ? usersApi.listTeam : undefined,
   );
 
   useEffect(() => {
@@ -2423,12 +2443,22 @@ export default function App() {
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userRole, setUserRole] = useState<UserRole>('viewer');
-  const convexAdminTeam = useQuery(userRole === 'admin' ? usersApi.listTeam : 'skip');
+  const convexAdminTeam = useQuery(usersApi.listTeam, userRole === 'admin' ? {} : 'skip');
   const [emailInput, setEmailInput] = useState('');
   const [newsletterStatus, setNewsletterStatus] = useState<'idle' | 'success'>('idle');
   const [readingHistory, setReadingHistory] = useState<string[]>(() => {
-    const local = localStorage.getItem('iyuun_history');
-    return local ? JSON.parse(local) : [];
+    const local = safeStorage.getItem('iyuun_history');
+    if (!local) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(local);
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+    } catch (error) {
+      console.warn('Failed to parse reading history from localStorage:', error);
+      return [];
+    }
   });
   const [orderStatus, setOrderStatus] = useState<'idle' | 'success' | 'loading'>('idle');
   const [firebaseWarning, setFirebaseWarning] = useState('');
@@ -2538,7 +2568,7 @@ export default function App() {
     setSelectedStory(s);
     setReadingHistory(prev => {
       const next = [s.id, ...prev.filter(id => id !== s.id)].slice(0, 5);
-      localStorage.setItem('iyuun_history', JSON.stringify(next));
+      safeStorage.setItem('iyuun_history', JSON.stringify(next));
       return next;
     });
     setCurrentPage('article');
@@ -2606,7 +2636,7 @@ export default function App() {
     const storyComments = useQuery(api.comments.listByStory, { storyId: story.id });
     const createComment = useMutation(api.comments.create);
     const [likes, setLikes] = useState(story.likesCount || 0);
-    const [hasLiked, setHasLiked] = useState(() => localStorage.getItem(`iyuun_liked_${story.id}`) === 'true');
+    const [hasLiked, setHasLiked] = useState(() => safeStorage.getItem(`iyuun_liked_${story.id}`) === 'true');
     const [comments, setComments] = useState<Comment[]>([]);
     const [newComment, setNewComment] = useState('');
     const [recs, setRecs] = useState<Story[]>([]);
@@ -2652,7 +2682,7 @@ Return exactly 3 story IDs most relevant to read next (excluding ${story.id}). O
       if (hasLiked) return;
       setHasLiked(true);
       setLikes(l => l + 1);
-      localStorage.setItem(`iyuun_liked_${story.id}`, 'true');
+      safeStorage.setItem(`iyuun_liked_${story.id}`, 'true');
       try {
         await incrementStoryLikes({ storyId: story.id });
       } catch (e) { console.error(e); }
